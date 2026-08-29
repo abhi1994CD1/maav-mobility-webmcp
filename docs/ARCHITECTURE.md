@@ -303,12 +303,12 @@ One central registry owns every registered tool's registration `AbortController`
 2. The `execute` wrapper increments the tool's in-flight count before validation/use-case dispatch and decrements it in `finally`.
 3. A phase change recomputes the desired tool set.
 4. If a tool should be removed while its count is nonzero, mark removal pending; do not abort its registration or replace the same name.
-5. After the last execution settles, abort that tool's registration controller and complete removal.
+5. After the last callback settles, defer removal through a short post-settlement task/grace before aborting that tool's registration controller. Chrome 150 can otherwise reject the caller after the domain mutation has already committed because result delivery is still finishing.
 6. If the tool becomes desired again before draining, cancel the pending removal rather than churn the registration.
 
 Do not assume a later Chrome `unregisterTool` API or Chrome-153-or-later lifecycle behavior. Delayed registry removal can briefly leave a stale tool discoverable, so every mutation use case must enforce phase, revision, and approval preconditions at execution time.
 
-The registration controller owns discoverability; it is not the invocation cancellation signal. Invocation cancellation is handled by `execute(input, { signal })` and must not partially commit a mutation.
+The registration controller owns discoverability; it is not the invocation cancellation signal. Invocation cancellation is handled by `execute(input, { signal })` and must not partially commit a mutation. The adapter forwards a supplied invocation signal and provides a non-aborted fallback when Chrome 150's deterministic `executeTool` test path omits the callback options object.
 
 ## WebMCP browser security
 

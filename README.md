@@ -1,36 +1,136 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Nexus Mobility Recovery Command
 
-## Getting Started
+A premium, human-governed mobility disruption recovery command center built for the OpenAI WebMCP Challenge.
 
-First, run the development server:
+The application exposes six real browser-native WebMCP tools in Google Chrome 150. A browser agent can inspect a deterministic synthetic transport network, evaluate code-scored recovery plans, stage one plan, wait for explicit operator approval, commit only the approved revision, inspect the audit trail, and roll back operational state without erasing governance history.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+> **SIMULATED OPERATIONS • GOOGLE MAPS CONTEXT**
+> This is a decision-support digital twin, not a real transport control system. Fleet, passenger, incident, accessibility, energy, and recovery data are authored and deterministic.
+
+## Golden workflow
+
+```text
+Human activates incident
+  → agent inspects
+  → agent evaluates
+  → agent stages
+  → human approves in the visible UI
+  → agent commits
+  → RECOVERED
+  → agent audits or rolls back
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The durable domain phases are:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+READY → INCIDENT_ACTIVE → OPTIONS_EVALUATED → PLAN_STAGED
+      → APPROVED → RECOVERED → ROLLED_BACK
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Every successful domain mutation validates `expectedRevision` and increments revision exactly once. Approval is one-time, plan-bound, and valid only for the resulting `APPROVED` revision.
 
-## Learn More
+## WebMCP tools
 
-To learn more about Next.js, take a look at the following resources:
+| Tool | Availability |
+|---|---|
+| `get_network_snapshot` | All phases; read-only |
+| `evaluate_recovery_options` | `INCIDENT_ACTIVE` |
+| `stage_recovery_plan` | `OPTIONS_EVALUATED` |
+| `commit_approved_recovery` | `APPROVED` after visible human approval |
+| `rollback_last_recovery` | `RECOVERED` |
+| `get_action_audit_log` | All phases; read-only |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Incident activation, reset, and approval are intentionally human-only UI controls. There is no generic mutation tool.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Architecture
 
-## Deploy on Vercel
+```text
+React UI / WebMCP / Google adapters
+                 ↓
+        application use cases
+                 ↓
+        deterministic domain core
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- Modular monolith with hexagonal boundaries.
+- UI and WebMCP invoke the same `CommandCenterService` use cases.
+- Domain and application layers do not import React, Next.js, browser APIs, Google, WebMCP, or Zustand.
+- Zustand implements the in-memory repository adapter and separate ephemeral UI state.
+- The central WebMCP registry tracks in-flight executions and drains before aborting a registration.
+- Rollback snapshots only network, fleet, demand, simulated time, incident, and metrics; audit and governance are never rewound.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Google context and fallback
+
+With keys configured, the UI uses Google Maps JavaScript API and `AdvancedMarkerElement`, while a narrow server route calls Google Routes API for normalized distance/duration context.
+
+Without keys—or when Routes is unavailable—the app uses a clearly labelled authored map and route-context fallback. The entire golden workflow remains functional and selects the same winning plan because Google data never participates in canonical hard constraints or scoring.
+
+Copy `.env.example` to `.env.local` to enable Google enrichment:
+
+```bash
+cp .env.example .env.local
+```
+
+Use separate restricted keys:
+
+- `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`: Maps JavaScript API, HTTP-referrer restricted.
+- `NEXT_PUBLIC_GOOGLE_MAP_ID`: optional Google map ID; the UI otherwise uses `DEMO_MAP_ID`.
+- `GOOGLE_ROUTES_API_KEY`: Routes API only, API-restricted, server-side.
+
+Never commit populated environment files.
+
+## Local development
+
+Requirements:
+
+- Node.js 20+
+- pnpm 8.11.0
+- Google Chrome 150 with WebMCP testing enabled for real-tool smoke testing
+
+```bash
+pnpm install
+pnpm dev
+```
+
+Open `http://127.0.0.1:3000`. The app remains fully demonstrable with manual fallback controls when WebMCP or Google APIs are unavailable.
+
+## Verification
+
+Local hard gates:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+Full Playwright E2E is configured for Linux CI and does not require downloading the newest Playwright browser for ordinary local development:
+
+```bash
+pnpm test:e2e
+```
+
+The test suite covers deterministic replay, hard-constraint filtering/ranking, legal transitions, stale revisions, approval binding and invalidation, operational-only rollback, strict tool schemas, exact phase registration, drain-aware removal, Routes fallback, and the golden UI flow.
+
+## Chrome 150 smoke flow
+
+1. Open the app as the top-level same-origin page and confirm the WebMCP status reads available.
+2. Activate the incident in the UI.
+3. Invoke `get_network_snapshot`, `evaluate_recovery_options`, and `stage_recovery_plan` through Chrome WebMCP.
+4. Confirm `commit_approved_recovery` is absent before approval.
+5. Approve the staged plan in the visible UI; confirm commit becomes available.
+6. Commit through WebMCP and verify revision 5, `RECOVERED`, and 96.8% on-time arrivals.
+7. Read the audit and roll back; verify revision 6, `ROLLED_BACK`, restored operational metrics, and preserved audit history.
+
+## Contract documents
+
+- [`AGENTS.md`](./AGENTS.md)
+- [`docs/PRODUCT.md`](./docs/PRODUCT.md)
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+- [`docs/WEBMCP_TOOLS.md`](./docs/WEBMCP_TOOLS.md)
+- [`docs/DEMO.md`](./docs/DEMO.md)
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE).

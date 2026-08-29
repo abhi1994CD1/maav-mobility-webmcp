@@ -83,7 +83,10 @@ Also run a manual real-WebMCP smoke test in the installed Chrome 150. Do not req
 9. Roll back; verify only operational state is restored, governance is cleared, phase becomes `ROLLED_BACK`, and prior audit entries remain.
 10. Read the audit again; verify the rollback event was appended and its operator-supplied reason is treated as untrusted content.
 11. Repeat with Routes API unavailable and verify the labelled authored fallback completes the same workflow and selects the same winning plan.
-12. Exercise a cancellable async call and a phase change during invocation; verify execution receives its `AbortSignal`, no partial domain mutation occurs, and registry removal waits for the in-flight call to settle.
+12. Exercise a cancellable async call and a phase change during invocation; verify execution receives its `AbortSignal`, no partial domain mutation occurs, and registry removal waits through the post-settlement result-delivery grace before aborting the registration.
+13. Verify the audit actor sequence proves ownership: human activation, agent evaluation, agent staging, human approval, agent commit, and agent rollback.
+
+Use Chrome's real browser-agent or Model Context Tool Inspector surface for the natural-language run. A deterministic local smoke may use Chrome's developer `document.modelContext.executeTool(...)` test path, but that consumer-only method must not become a production application dependency.
 
 ## Internal build order
 

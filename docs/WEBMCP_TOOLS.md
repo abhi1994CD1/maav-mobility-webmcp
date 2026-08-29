@@ -1,142 +1,45 @@
 # WebMCP Tool Contracts
 
-## Tool strategy
-Expose only tools that represent clear user-visible capabilities. Each tool calls one application use case.
+## Target and public surface
 
-## 1. `get_network_snapshot`
-Read-only.
+These contracts target the WebMCP API available in Google Chrome 150.
 
-Purpose: inspect the current operational state, incident, constraints, key KPIs, and legal next actions.
+- Use `document.modelContext`, never `navigator.modelContext`.
+- Use the official `webmcp-types` package for TypeScript declarations.
+- Register tools with the imperative API through one adapter and central drain-aware registry.
+- Validate every input again at runtime with Zod before calling an application use case.
+- Propagate `execute(input, { signal })` cancellation into cancellable asynchronous work.
+- Do not add `outputSchema`; it is not part of the targeted contract.
 
-Input:
+The complete public tool surface is:
+
+1. `get_network_snapshot`
+2. `evaluate_recovery_options`
+3. `stage_recovery_plan`
+4. `commit_approved_recovery`
+5. `rollback_last_recovery`
+6. `get_action_audit_log`
+
+`activate_demo_incident` is not a WebMCP tool. Activating and resetting the canonical incident are explicit human/demo UI controls. The browser agent's recovery responsibility begins after an incident exists.
+
+Every definition includes `name`, `title`, a concise `description`, serializable JSON `inputSchema`, `annotations`, and `execute(input, { signal })`. Every tool calls one application use case and returns a compact serializable envelope.
+
+## Common result envelope
+
+Success:
+
 ```json
 {
-  "focus": "network | incident | fleet | demand | accessibility | all"
-}
-```
-
-Output:
-```json
-{
-  "scenarioId": "jhb-morning-peak-v1",
-  "revision": 3,
-  "phase": "INCIDENT_ACTIVE",
-  "summary": {},
-  "constraints": {},
-  "legalNextActions": ["evaluate_recovery_options"]
-}
-```
-
-Annotations: `readOnlyHint: true`.
-
-Visible effect: map camera and side panel focus on the requested area.
-
-## 2. `activate_demo_incident`
-Demo-state mutation.
-
-Purpose: activate one authored disruption scenario.
-
-Input:
-```json
-{
-  "incidentId": "rosebank_sandton_blockage",
-  "expectedRevision": 0
-}
-```
-
-Visible effect: incident overlay, route violation, queue growth, KPI degradation.
-
-## 3. `evaluate_recovery_options`
-Analytical mutation of the shared workspace, not an operational commit.
-
-Purpose: simulate and compare recovery options against explicit objectives.
-
-Input:
-```json
-{
-  "expectedRevision": 1,
-  "objectives": {
-    "minimumOnTimePercent": 95,
-    "maximumWaitMinutes": 5,
-    "preserveAccessibility": true,
-    "maximumEnergyIncreasePercent": 8
+  "ok": true,
+  "data": {},
+  "meta": {
+    "revision": 1,
+    "phase": "INCIDENT_ACTIVE"
   }
 }
 ```
 
-Output includes each plan's metrics, hard-constraint status, explanation codes, and recommended plan ID.
-
-Visible effect: plan comparison drawer appears and alternatives render on the map.
-
-## 4. `stage_recovery_plan`
-Reversible workspace mutation.
-
-Purpose: stage one evaluated plan for human review without changing operational state.
-
-Input:
-```json
-{
-  "planId": "combined_recovery_c",
-  "expectedRevision": 2
-}
-```
-
-Visible effect: translucent route/fleet preview and approval drawer.
-
-## 5. `commit_approved_recovery`
-Consequential mutation. Dynamically registered only in `APPROVED` state.
-
-Purpose: apply the exact plan that the human approved.
-
-Input:
-```json
-{
-  "planId": "combined_recovery_c",
-  "expectedRevision": 4
-}
-```
-
-Preconditions:
-- approval exists;
-- approval plan matches input plan;
-- approval revision matches current state;
-- approval is unused and unexpired;
-- phase is `APPROVED`.
-
-Visible effect: recovery animation, KPI changes, audit events, recovery state.
-
-## 6. `rollback_last_recovery`
-Consequential but reversible mutation. Registered only after a committed plan.
-
-Purpose: restore the pre-commit operational snapshot.
-
-Input:
-```json
-{
-  "reason": "Operator requested rollback after review",
-  "expectedRevision": 6
-}
-```
-
-Visible effect: map and KPIs return to the previous snapshot; audit remains append-only.
-
-## 7. `get_action_audit_log`
-Read-only.
-
-Purpose: inspect who/what performed each action, at which revision, with what result.
-
-Input:
-```json
-{
-  "afterSequence": 0,
-  "limit": 25
-}
-```
-
-Annotations: `readOnlyHint: true`.
-
-## Structured tool error
-All tools return this shape on failure:
+Failure:
 
 ```json
 {
@@ -146,18 +49,347 @@ All tools return this shape on failure:
     "message": "The network changed after the agent inspected it.",
     "recoverable": true,
     "suggestedAction": "Call get_network_snapshot and retry with the current revision."
+  },
+  "meta": {
+    "revision": 1,
+    "phase": "INCIDENT_ACTIVE"
   }
 }
 ```
 
+For a successful mutation, `meta` contains the resulting revision and phase. For a query or failure, it contains the unchanged current revision and phase. Failures never expose stack traces, keys, approval secrets, or partially mutated state.
+
+Stable error codes include `INVALID_INPUT`, `STALE_REVISION`, `INVALID_PHASE`, `PLAN_NOT_FOUND`, `APPROVAL_REQUIRED`, `APPROVAL_MISMATCH`, `APPROVAL_CONSUMED`, `NO_ROLLBACK_AVAILABLE`, `ABORTED`, and `INTERNAL_ERROR`. Messages and suggested actions must be actionable without revealing internals.
+
+## 1. `get_network_snapshot`
+
+Title: `Get network snapshot`
+
+Description: `Inspect simulated operations, the active incident, KPIs, constraints, and legal next actions.`
+
+Read-only. It must not increment revision.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "focus": {
+      "type": "string",
+      "enum": ["network", "incident", "fleet", "demand", "accessibility", "all"]
+    }
+  },
+  "required": ["focus"],
+  "additionalProperties": false
+}
+```
+
+Success `data` includes compact `scenarioId`, requested summary, constraints, route-context source (`GOOGLE` or `AUTHORED_FALLBACK`), and legal next actions. It does not return a large state dump or raw Google free-form text.
+
+Annotations:
+
+```json
+{
+  "readOnlyHint": true,
+  "untrustedContentHint": false
+}
+```
+
+Visible effect: ephemeral map focus and the relevant side panel update; revision does not change.
+
+## 2. `evaluate_recovery_options`
+
+Title: `Evaluate recovery options`
+
+Description: `Calculate and compare deterministic recovery plans against operator objectives.`
+
+Analytical domain mutation from `INCIDENT_ACTIVE` to `OPTIONS_EVALUATED`.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "objectives": {
+      "type": "object",
+      "properties": {
+        "minimumOnTimePercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "maximumWaitMinutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "preserveAccessibility": {
+          "type": "boolean"
+        },
+        "maximumEnergyIncreasePercent": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "minimumOnTimePercent",
+        "maximumWaitMinutes",
+        "preserveAccessibility",
+        "maximumEnergyIncreasePercent"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": ["expectedRevision", "objectives"],
+  "additionalProperties": false
+}
+```
+
+Success `data` includes compact plan IDs, calculated metrics, hard-constraint pass/fail, explanation codes, and `recommendedPlanId`. The model calculates every value; the agent does not.
+
+Annotations:
+
+```json
+{
+  "readOnlyHint": false,
+  "untrustedContentHint": false
+}
+```
+
+Visible effect: the plan comparison opens and alternatives render on the map. The successful canonical call at expected revision 1 returns revision 2 and phase `OPTIONS_EVALUATED`.
+
+## 3. `stage_recovery_plan`
+
+Title: `Stage recovery plan`
+
+Description: `Stage one evaluated recovery plan for visible human review without applying it.`
+
+Reversible governance mutation from `OPTIONS_EVALUATED` to `PLAN_STAGED`. It does not change operational fleet, demand, or KPI truth.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "planId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": ["planId", "expectedRevision"],
+  "additionalProperties": false
+}
+```
+
+Success `data` includes `planId`, calculated impact summary, and `approvalRequired: true`.
+
+Annotations:
+
+```json
+{
+  "readOnlyHint": false,
+  "untrustedContentHint": false
+}
+```
+
+Visible effect: a translucent preview and approval drawer appear. For the canonical sequence, `stage_recovery_plan(expectedRevision=2)` returns revision 3 and phase `PLAN_STAGED`.
+
+## Human-only approval use case
+
+Approval is intentionally not a WebMCP tool. The operator approves the visible staged plan through the UI using the same application layer.
+
+For the canonical sequence, approval at `expectedRevision=3` produces revision 4 and phase `APPROVED`, with:
+
+```json
+{
+  "planId": "combined_recovery_c",
+  "validForRevision": 4,
+  "consumed": false
+}
+```
+
+Only after this succeeds may the registry expose `commit_approved_recovery`.
+
+## 4. `commit_approved_recovery`
+
+Title: `Commit approved recovery`
+
+Description: `Apply the exact recovery plan explicitly approved in the visible UI.`
+
+Consequential mutation from `APPROVED` directly to `RECOVERED`. Execution and animation are transient UI/tool activity, not a durable phase.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "planId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": ["planId", "expectedRevision"],
+  "additionalProperties": false
+}
+```
+
+Atomic preconditions:
+
+- current revision equals `expectedRevision`;
+- phase is `APPROVED`;
+- approval exists;
+- approval `validForRevision` equals current revision;
+- approval and staged-plan IDs both match input `planId`;
+- approval `consumed` is `false`.
+
+A valid commit first captures an operational-only snapshot, then applies the plan, consumes approval, appends events/audit, and increments revision once. Any intervening mutation invalidates approval. These checks run even if delayed registry removal leaves the tool temporarily discoverable.
+
+Success `data` includes `planId`, post-recovery metrics, and the committed audit sequence. It does not expose the approval record as an authorization secret.
+
+Annotations:
+
+```json
+{
+  "readOnlyHint": false,
+  "untrustedContentHint": false
+}
+```
+
+Visible effect: operational overlays and KPIs change to recovered values while the UI animates the transition. For the canonical sequence, expected revision 4 returns revision 5 and phase `RECOVERED`.
+
+## 5. `rollback_last_recovery`
+
+Title: `Roll back last recovery`
+
+Description: `Restore the operational state from immediately before the last committed recovery.`
+
+Consequential, reversible mutation from `RECOVERED` to `ROLLED_BACK`.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": ["reason", "expectedRevision"],
+  "additionalProperties": false
+}
+```
+
+Rollback restores only the `OperationalSnapshot`: network, separated fleet/demand state, simulated time, active incident, and operational metrics. It never restores phase, revision, approval, staged/evaluated governance, audit, or activity state. It clears approval/staged governance and the consumed snapshot, appends rollback events/audit, increments revision once, and enters `ROLLED_BACK`.
+
+Success `data` includes restored metric summary and audit sequence. The submitted reason is validated and safely rendered; it becomes untrusted audit content rather than executable markup.
+
+Annotations:
+
+```json
+{
+  "readOnlyHint": false,
+  "untrustedContentHint": false
+}
+```
+
+Visible effect: map and KPIs return to pre-commit operational values while the append-only audit remains. For the canonical sequence, expected revision 5 returns revision 6 and phase `ROLLED_BACK`.
+
+## 6. `get_action_audit_log`
+
+Title: `Get action audit log`
+
+Description: `Read bounded action, actor, revision, and outcome records from the append-only audit.`
+
+Read-only. It must not increment revision.
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "afterSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    }
+  },
+  "required": ["afterSequence", "limit"],
+  "additionalProperties": false
+}
+```
+
+Success `data` includes bounded audit items and `nextSequence`. Audit items use codes and structured fields. A validated operator-supplied rollback reason may be included because it is necessary audit evidence; raw third-party route text is not returned.
+
+Annotations:
+
+```json
+{
+  "readOnlyHint": true,
+  "untrustedContentHint": true
+}
+```
+
+Visible effect: the audit timeline focuses the returned range; revision does not change.
+
 ## Dynamic registration matrix
+
+Exact names are shown below. Registration state is an availability hint, not authorization; every executing use case revalidates current phase and revision.
 
 | Phase | Registered tools |
 |---|---|
-| READY | get snapshot, activate incident, audit |
-| INCIDENT_ACTIVE | get snapshot, evaluate options, audit |
-| OPTIONS_EVALUATED | get snapshot, evaluate options, stage plan, audit |
-| PLAN_STAGED / AWAITING APPROVAL | get snapshot, evaluate options, stage plan, audit |
-| APPROVED | get snapshot, commit approved recovery, audit |
-| RECOVERED | get snapshot, rollback, audit |
-| ROLLED_BACK | get snapshot, evaluate options, audit |
+| `READY` | `get_network_snapshot`, `get_action_audit_log` |
+| `INCIDENT_ACTIVE` | `get_network_snapshot`, `evaluate_recovery_options`, `get_action_audit_log` |
+| `OPTIONS_EVALUATED` | `get_network_snapshot`, `stage_recovery_plan`, `get_action_audit_log` |
+| `PLAN_STAGED` | `get_network_snapshot`, `get_action_audit_log` |
+| `APPROVED` | `get_network_snapshot`, `commit_approved_recovery`, `get_action_audit_log` |
+| `RECOVERED` | `get_network_snapshot`, `rollback_last_recovery`, `get_action_audit_log` |
+| `ROLLED_BACK` | `get_network_snapshot`, `get_action_audit_log` |
+
+There is no `activate_demo_incident`, approval, generic execution, or unrestricted state-update tool.
+
+## Drain-aware lifecycle and cancellation
+
+The central registry owns one registration `AbortController` and in-flight counter per tool. Its execute wrapper increments before dispatch and decrements in `finally`. When a phase change makes a tool invalid, the registry marks it for removal. If executions are in flight, removal waits; when the count reaches zero, the registry aborts the registration signal. It never aborts/removes and immediately re-registers the same name while an invocation is active.
+
+Do not assume a later `unregisterTool` method or Chrome-153-or-later behavior. A delayed removal can leave a tool visible briefly, which is why phase, revision, and approval checks remain mandatory inside application use cases.
+
+The `signal` received by `execute(input, { signal })` is separate from the registration controller. Pass it to cancellable route fetches and async work. Cancellation before atomic mutation returns `ABORTED`; cancellation must not produce a partial mutation or false success.
+
+## Browser and content security
+
+- WebMCP requires a secure origin-isolated/origin-keyed document and permission from the `tools` Permissions Policy.
+- Do not enable `document.domain`.
+- Top-level same-origin registration is sufficient; no cross-origin iframe exposure is required.
+- Handle missing API, `SecurityError`, and `NotAllowedError` without breaking the manual app.
+- Set `untrustedContentHint: true` only when the actual tool output includes untrusted external or user-supplied content.
+- Normalize Google context to bounded structured values. Do not return raw third-party free-form text unless required by the product contract.
+- Never expose API keys, approval secrets, stack traces, or generic mutation facilities.

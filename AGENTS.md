@@ -1,255 +1,138 @@
 # AGENTS.md
 
 ## Mission
+
 Build a polished WebMCP-enabled mobility disruption recovery command center for the WebMCP Challenge.
 
-The product must let a transport operator and a browser agent inspect a simulated network, evaluate recovery options, stage one option, require explicit human approval, commit the approved recovery, observe measurable recovery, and roll back the last committed action.
+The product must let a transport operator and a browser agent inspect a simulated network, evaluate recovery options, stage one option, require explicit human approval, commit the approved recovery, observe measurable recovery, and roll back the last committed recovery.
 
-Read these documents before changing code:
+Before changing code, read these documents completely:
+
 - `docs/PRODUCT.md`
 - `docs/ARCHITECTURE.md`
 - `docs/WEBMCP_TOOLS.md`
 - `docs/DEMO.md`
 
+Those documents own the detailed product, architecture, tool, and demo contracts. This file is the concise durable contract.
+
 ## Product truth
+
 - This is a decision-support digital twin, not a real transport control system.
-- Google Maps Platform supplies map, place, and route context.
+- Google Maps Platform supplies geographic, map, place, and route context.
 - Fleet positions, passengers, capacities, incidents, accessibility constraints, energy, and recovery outcomes are simulated.
 - Never label simulated values as live or real.
-- The interface must visibly display: `SIMULATED OPERATIONS • GOOGLE MAPS CONTEXT`.
+- The interface must visibly display `SIMULATED OPERATIONS • GOOGLE MAPS CONTEXT`.
 - Do not invent integrations, live feeds, or metrics that are not implemented.
 
-## Architecture decision
-Use a modular monolith with hexagonal boundaries.
+## Architecture
 
-The domain and application layers must not import React, Next.js, Google Maps, browser APIs, or WebMCP APIs.
+- Use a modular monolith with hexagonal boundaries.
+- Layer direction is `UI / WebMCP / Google adapters -> application use cases -> domain model`.
+- The domain and application layers must not import React, Next.js, Google Maps, browser APIs, WebMCP APIs, or Zustand.
+- Human UI actions and WebMCP tools must invoke the same application use cases. Do not duplicate business logic in tool handlers or React components.
+- Keep revisioned application/domain state separate from ephemeral UI state. Ephemeral UI changes never increment the domain revision.
+- Zustand may implement a repository adapter and UI orchestration, but it is not a domain or application dependency.
+- Create directories when an implemented slice needs them. Do not add empty architecture folders or `.gitkeep` files merely to mirror a planned structure.
 
-All human UI actions and WebMCP tool calls must execute the same application use cases. Never duplicate business logic inside tool handlers or React components.
+## Domain and workflow
 
-Layer direction:
-
-`UI / WebMCP / Google adapters -> application use cases -> domain model`
-
-## Technology baseline
-- Next.js App Router
-- React + TypeScript with `strict: true`
-- pnpm only
-- Tailwind CSS
-- Zod for runtime validation
-- Zustand for client orchestration state
-- Google Maps JavaScript API using `AdvancedMarkerElement`
-- Google Routes API through server-side Next.js route handlers
-- Vitest for domain/unit/contract tests
-- Playwright for end-to-end tests
-- Native `document.modelContext.registerTool` via a small typed adapter
-
-Do not add a database, message broker, microservice, authentication system, LLM API backend, Redux, GraphQL, or a second map library.
-
-## Repository boundaries
-Expected structure:
-
-```text
-src/
-  app/                    # Next.js routes, layout, server route handlers
-  application/            # use cases, commands, queries, ports
-  domain/                 # pure models, rules, simulation, recovery scoring
-  infrastructure/
-    google/               # Maps/Routes adapters
-    webmcp/               # browser WebMCP adapter and registration lifecycle
-    persistence/          # in-memory/session adapters only
-  features/command-center # React feature composition
-  state/                  # Zustand orchestration store
-  ui/                     # reusable presentational components
-  types/                  # browser API declarations
-  data/scenarios/         # authored synthetic scenario seeds
-tests/
-  unit/
-  contract/
-  e2e/
-docs/
-```
-
-## Domain rules
-- Simulation must be deterministic for a given scenario seed and Google route-context snapshot.
-- The model, not the agent, calculates every KPI.
-- Never let an LLM calculate waiting time, capacity, energy, or plan scores.
-- Hard constraints are evaluated before soft scoring.
-- Accessibility violations are a hard failure in the primary demo scenario.
-- Every state-changing command must include an expected state revision.
-- Every committed command creates a domain event and an audit record.
-- Keep a pre-commit snapshot so the last recovery can be rolled back.
-
-## Workflow state machine
-Use explicit states and legal transitions:
+The authoritative workflow is:
 
 ```text
 READY
   -> INCIDENT_ACTIVE
   -> OPTIONS_EVALUATED
   -> PLAN_STAGED
-  -> AWAITING_OPERATOR_APPROVAL
   -> APPROVED
-  -> APPLYING
   -> RECOVERED
   -> ROLLED_BACK
 ```
 
-Invalid transitions must return structured, actionable errors and must not mutate state.
+`PLAN_STAGED` means a plan is staged and waiting for explicit human approval. There is no durable `AWAITING_OPERATOR_APPROVAL` or `APPLYING` phase. Execution and animation are transient activity state.
 
-## WebMCP rules
-- Use the imperative API through one adapter module.
-- Keep tools single-purpose and non-overlapping.
-- Tool names must be precise action verbs in snake_case.
-- Validate all tool input again at runtime with Zod.
-- Return compact structured results, not large state dumps.
-- Read tools use `readOnlyHint`.
-- Externally sourced text uses `untrustedContentHint` when applicable.
-- Dynamically register consequential tools only when valid in the current workflow state.
-- `commit_approved_recovery` must not be registered before a human clicks Approve.
-- A tool must update shared application state before it reports success.
-- Tool errors must include `code`, `message`, `recoverable`, and `suggestedAction`.
-- Never expose API keys, approval secrets, internal stack traces, or unrestricted mutation tools.
+- Simulation is deterministic for a scenario seed and its authored operational context.
+- The model, not an agent or LLM, calculates every KPI and plan score.
+- Evaluate hard constraints before soft scoring. Accessibility violations are a hard failure in the canonical scenario.
+- Every successful domain mutation checks `expectedRevision` and increments revision exactly once. A stale or invalid command does not mutate state.
+- Human approval is bound to one plan and the resulting `APPROVED`-state revision, is one-time use, and is invalidated by any intervening domain mutation.
+- Rollback uses a narrow operational snapshot, never a snapshot of the entire command-center state. Audit history remains append-only.
+- Canonical incident activation and reset are human/demo UI controls, not public WebMCP tools.
 
-Required tools and exact contracts are defined in `docs/WEBMCP_TOOLS.md`.
+## WebMCP
 
-## Human approval rule
-An agent may inspect, evaluate, and stage a plan. It may not commit a recovery until the operator has explicitly approved the currently staged plan in the visible UI.
+- Target the WebMCP API available in Google Chrome 150 and use `document.modelContext`, never `navigator.modelContext`.
+- Use the official `webmcp-types` package for TypeScript declarations and Zod for runtime input validation.
+- The public tool surface is exactly:
+  - `get_network_snapshot`
+  - `evaluate_recovery_options`
+  - `stage_recovery_plan`
+  - `commit_approved_recovery`
+  - `rollback_last_recovery`
+  - `get_action_audit_log`
+- Consequential tools are state-gated both by registration and application preconditions. `commit_approved_recovery` is unavailable until the visible UI records the operator's approval.
+- Use a central, drain-aware registration lifecycle. Do not remove a tool while one of its invocations is in flight, and propagate invocation `AbortSignal`s into cancellable work.
+- Return the serializable success/failure envelopes defined in `docs/WEBMCP_TOOLS.md`; do not invent `outputSchema` for the Chrome 150 target.
+- Read tools set `readOnlyHint: true`. Set `untrustedContentHint: true` only when the actual result can contain untrusted external or user-supplied content.
+- Never expose API keys, approval secrets, internal stack traces, raw unnecessary third-party text, or generic unrestricted mutation tools.
 
-Approval must be:
-- bound to one `planId`;
-- bound to one state `revision`;
-- one-time use;
-- invalidated when the incident, plan, or state revision changes;
-- visibly recorded in the audit timeline.
+## Human approval
 
-Do not simulate approval inside a tool handler.
+An agent may inspect, evaluate, and stage a plan. It may not approve a plan or commit a recovery until the operator explicitly approves the currently staged plan in the visible UI.
 
-## Google Maps rules
-- Browser key: Maps JavaScript API only; restrict it by allowed HTTP referrers.
-- Server key: Routes API only; never expose it to client bundles.
-- Keep Google API calls behind ports/adapters.
-- Do not commit Google API responses, route polylines, place content, or API keys to the repository.
-- Cache route context in memory for the current demo session only.
-- Provide a clearly labelled authored synthetic fallback when Routes API is unavailable.
-- Never remove Google attribution.
-- Use Google route context as an input; do not make Google data the source of fleet/passenger truth.
+Approval must contain `planId`, `validForRevision`, and `consumed`. The commit use case must verify the current revision, approval revision, plan, consumed flag, and `APPROVED` phase atomically. Do not simulate approval inside a tool handler.
 
-## UI principles
-- Full-screen enterprise command-center experience.
-- The map is the primary canvas; chat is not the primary interface.
-- Show visible response to every WebMCP tool call.
-- Required surfaces: network map, KPI strip, incident panel, agent activity rail, plan comparison, approval drawer, event timeline, reset control, and demo prompt.
-- Use restrained motion and high information clarity.
-- Red means active violation only. Green means verified recovery only.
-- Do not use fake loading delays.
-- Maintain keyboard access and semantic labels for core controls.
-- The app must remain usable at 1366x768 and 1440x900.
+## Google boundary
 
-## Reliability and fallback behavior
-- App must load into a usable demo state without the Routes API.
-- API failure must not break WebMCP registration.
-- A `Reset scenario` control must restore the canonical scenario.
-- Avoid network calls inside the deterministic simulation loop.
-- No random values without the seeded PRNG.
-- No current wall-clock time in deterministic tests.
+- Browser key: Maps JavaScript API only, restricted by allowed HTTP referrers.
+- Server key: Routes API only, never exposed to client bundles.
+- Keep Google calls behind ports/adapters and cache normalized context in memory for the demo session only.
+- Do not commit API responses, route polylines, place content, or keys.
+- Live Google traffic may enrich geography and visualization, but it must not change the canonical scenario's hard-constraint result or winning recovery plan.
+- The entire golden workflow must work with a clearly labelled authored fallback when Routes API is unavailable.
+- Preserve Google attribution.
+
+## Technology and scope
+
+Use Next.js App Router, React, strict TypeScript, pnpm only, Tailwind CSS, Zod, Zustand, Google Maps JavaScript API with `AdvancedMarkerElement`, server-side Routes API handlers, Vitest, and Playwright in Linux CI.
+
+Do not add a database, message broker, microservice, authentication system, LLM API backend, Redux, GraphQL, a second map library, real dispatch integrations, real passenger or fleet feeds, SUMO, reinforcement learning, V2X, payments, user accounts, production multi-tenancy, or a general-purpose chatbot.
+
+## UX and reliability
+
+- Use a full-screen enterprise command-center with the map as the primary canvas.
+- Required surfaces are the network map, KPI strip, incident panel, agent activity rail, plan comparison, approval drawer, event timeline, reset control, and demo prompt.
+- Show a visible response to every tool call without treating read-only or rendering activity as a domain mutation.
+- Keep loading, empty, and failure states visible; use restrained motion and high information clarity.
+- Red means an active violation; green means verified recovery.
+- Do not add fake loading delays. Preserve keyboard access and core semantic labels.
+- Keep the app usable at 1366x768 and 1440x900.
+- Routes failure must not break the app or WebMCP registration. Avoid network calls and wall-clock time inside deterministic simulation.
 
 ## Security
-- No secrets in source, logs, screenshots, or tool output.
-- Treat incident notes and external route text as untrusted.
-- Validate enums, numeric ranges, IDs, state revisions, and transition eligibility.
-- Use narrow server route handlers; reject arbitrary upstream URLs.
-- Never create a generic `execute_action` or `update_state` tool.
-- Do not use `dangerouslySetInnerHTML` for tool or external content.
 
-## Testing requirements
-Before marking a task complete, run the relevant subset and then the full verification suite:
+- WebMCP runs only in an origin-isolated secure document allowed by the `tools` Permissions Policy. Do not enable `document.domain`.
+- Top-level same-origin tools are sufficient; do not add cross-origin exposure.
+- Validate enums, ranges, IDs, revisions, schemas, and transition eligibility.
+- Treat external route text, incident notes, and user-entered reasons as untrusted.
+- Use narrow server route handlers and reject arbitrary upstream URLs.
+- Do not use `dangerouslySetInnerHTML` for tool or external content.
+- Keep secrets out of source, logs, screenshots, and tool output.
+
+## Verification and change discipline
+
+The local development target is macOS 12.7.6 on Intel x86_64 with Google Chrome 150 and the WebMCP testing flag enabled.
+
+Local hard gates are:
 
 ```bash
 pnpm lint
 pnpm typecheck
 pnpm test
-pnpm test:e2e
 pnpm build
 ```
 
-Minimum required coverage:
-- deterministic scenario replay;
-- hard-constraint filtering;
-- plan ranking;
-- invalid state transitions;
-- stale revision rejection;
-- approval binding and invalidation;
-- rollback restoration;
-- WebMCP input validation;
-- dynamic tool registration state matrix;
-- Routes API failure fallback;
-- complete golden demo flow.
+Also run the manual Chrome 150 real-WebMCP smoke flow. Full Playwright E2E may run in Linux CI and the newest locally downloaded Playwright browser must not block local development.
 
-Do not weaken or delete a test to make a change pass. Fix the implementation or document a genuine contract change.
+Before coding, state the intended files, contract impact, and verification commands. Prefer the smallest vertical slice with visible value. Do not weaken tests, broaden scope, rename public contracts, add dependencies, or perform broad refactors without explicit approval. Update the owning document when a public contract changes.
 
-## Definition of done
-A feature is done only when:
-- implementation exists;
-- UI and WebMCP paths use the same application use case;
-- input and output are typed and runtime-validated;
-- state transition and audit behavior are correct;
-- tests cover success and failure paths;
-- loading, empty, and failure states are visible;
-- documentation is updated if a public contract changed;
-- no secrets or generated junk are present in the diff.
-
-## Coding conventions
-- Prefer small pure functions and explicit domain types.
-- Use discriminated unions for workflow and command results.
-- Use immutable updates at domain boundaries.
-- Avoid `any`; `unknown` must be narrowed.
-- Keep files focused; split files that mix UI, domain, and integration concerns.
-- Comments explain why, not what.
-- Use UTC ISO strings for audit records and a simulated service clock for scenario time.
-- IDs must be stable within a scenario and opaque outside it.
-
-## Change discipline
-Before coding:
-1. Read the relevant docs and existing tests.
-2. State the intended files, contract impact, and verification commands.
-3. Prefer the smallest vertical slice that produces visible value.
-
-After coding:
-1. Review the diff for architectural boundary violations.
-2. Run verification commands.
-3. Report what changed, tests run, known limitations, and next vertical slice.
-
-Do not perform broad refactors, rename public contracts, add dependencies, or change the product scope unless the task explicitly requires it.
-
-## Delivery priority
-P0:
-- deterministic scenario and recovery engine;
-- premium map-based shell;
-- WebMCP tools working end to end;
-- human approval gate;
-- commit, audit, rollback;
-- deployed live URL and reproducible golden demo.
-
-P1:
-- Google Routes enrichment;
-- WebMCP eval suite;
-- accessibility polish;
-- submission screenshots and diagnostics.
-
-P2 only after P0 and P1 are green:
-- secondary incident;
-- additional visualization polish;
-- optional Places search.
-
-## Explicitly out of scope
-- real dispatch operations;
-- real passenger or fleet feeds;
-- SUMO;
-- reinforcement learning;
-- V2X;
-- payment or ticketing;
-- user accounts;
-- production-grade multi-tenancy;
-- microservices;
-- a general-purpose AI chatbot;
-- a complete MAAV system.
+After coding, review the diff for boundary violations and generated junk, run the relevant checks, and report changes, tests, limitations, and the next slice.

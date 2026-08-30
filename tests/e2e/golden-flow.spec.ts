@@ -16,7 +16,7 @@ test("complete human-governed fallback workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Stage" }).click();
   await expect(page.getByText("Human decision gate")).toBeVisible();
   await page.getByRole("button", { name: "Approve plan" }).click();
-  await expect(page.getByText("APPROVAL RECORDED")).toBeVisible();
+  await expect(page.getByText("APPROVAL RECORDED", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /Commit approved recovery|Manual commit fallback/ }).click();
   await expect(page.getByText("RECOVERED", { exact: true })).toBeVisible();

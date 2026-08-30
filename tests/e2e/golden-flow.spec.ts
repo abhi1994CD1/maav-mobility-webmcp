@@ -22,6 +22,13 @@ test("complete human-governed fallback workflow", async ({ page }) => {
   await expect(page.getByText("RECOVERED", { exact: true })).toBeVisible();
   await expect(page.getByText("96.8%")).toBeVisible();
 
+  const auditDrawer = page.getByRole("dialog", {
+    name: "Append-only audit timeline",
+  });
+  await expect(auditDrawer).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(auditDrawer).toBeHidden();
+
   await page.getByRole("button", { name: "Roll back recovery" }).click();
   await expect(page.getByText("ROLLED BACK")).toBeVisible();
   await expect(page.getByText("6 events")).toBeVisible();

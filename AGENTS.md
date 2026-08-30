@@ -10,6 +10,7 @@ Before changing code, read these documents completely:
 
 - `docs/PRODUCT.md`
 - `docs/ARCHITECTURE.md`
+- `docs/RECOVERY_ENGINE.md`
 - `docs/WEBMCP_TOOLS.md`
 - `docs/DEMO.md`
 
@@ -52,6 +53,7 @@ READY
 
 - Simulation is deterministic for a scenario seed and its authored operational context.
 - The model, not an agent or LLM, calculates every KPI and plan score.
+- Candidate definitions may author resources, timings, and recovery actions, but never final KPI outcomes. Every plan metric must be derived from the current operational snapshot by the recovery engine.
 - Evaluate hard constraints before soft scoring. Accessibility violations are a hard failure in the canonical scenario.
 - Every successful domain mutation checks `expectedRevision` and increments revision exactly once. A stale or invalid command does not mutate state.
 - Human approval is bound to one plan and the resulting `APPROVED`-state revision, is one-time use, and is invalidated by any intervening domain mutation.
@@ -136,3 +138,13 @@ Also run the manual Chrome 150 real-WebMCP smoke flow. Full Playwright E2E may r
 Before coding, state the intended files, contract impact, and verification commands. Prefer the smallest vertical slice with visible value. Do not weaken tests, broaden scope, rename public contracts, add dependencies, or perform broad refactors without explicit approval. Update the owning document when a public contract changes.
 
 After coding, review the diff for boundary violations and generated junk, run the relevant checks, and report changes, tests, limitations, and the next slice.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

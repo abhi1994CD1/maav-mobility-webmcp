@@ -1,4 +1,4 @@
-# Golden Demo and Build Order
+# Golden Demo and Release Proof
 
 ## Golden prompt
 
@@ -72,6 +72,16 @@ Also run a manual real-WebMCP smoke test in the installed Chrome 150. Do not req
 
 ## Manual Chrome 150 WebMCP smoke test
 
+Run the map preflight in all three supported configurations before the workflow checks. Never print or capture credential values.
+
+1. Maps and Routes configured: verify the Google basemap and attribution; the full authored North Spine as a subdued operational backbone; the road-shaped Google Rosebank-Sandton segment as prominent traffic-aware context; simulated stops and vehicles; and `GOOGLE MAPS + ROUTES CONTEXT`. Confirm the segment changes from cyan to disruption red to verified-recovery green without a route load changing revision.
+2. Maps configured and Routes unavailable: verify the Google basemap, attribution, prominent authored operational path, stops, vehicles, and `GOOGLE MAPS • AUTHORED ROUTE FALLBACK`.
+3. Maps and Routes unavailable: verify the authored SVG appears immediately with `AUTHORED MAP + ROUTE FALLBACK` and no map-loading state changes domain revision.
+
+If Routes succeeds while Maps JavaScript is unavailable, the supported intermediate label is `AUTHORED MAP • GOOGLE ROUTE CONTEXT`; the SVG remains authored and does not attempt to draw Google geometry. Google traffic is a one-time session snapshot, not a continuous feed, and must not change the canonical plan metrics, winner, revision trace, or audit sequence.
+
+Complete the full workflow in every locally testable configuration and verify Chrome WebMCP remains active throughout.
+
 1. Open the app as a top-level same-origin, secure/origin-isolated document with the `tools` Permissions Policy enabled; verify `document.modelContext` is available and no code probes `navigator.modelContext`.
 2. Verify the initial tool set contains only the `READY` matrix tools and never `activate_demo_incident`.
 3. Activate the incident through the UI and verify `evaluate_recovery_options` becomes available.
@@ -82,90 +92,66 @@ Also run a manual real-WebMCP smoke test in the installed Chrome 150. Do not req
 8. Read the audit log; verify the read leaves revision unchanged.
 9. Roll back; verify only operational state is restored, governance is cleared, phase becomes `ROLLED_BACK`, and prior audit entries remain.
 10. Read the audit again; verify the rollback event was appended and its operator-supplied reason is treated as untrusted content.
-11. Repeat with Routes API unavailable and verify the labelled authored fallback completes the same workflow and selects the same winning plan.
-12. Exercise a cancellable async call and a phase change during invocation; verify execution receives its `AbortSignal`, no partial domain mutation occurs, and registry removal waits through the post-settlement result-delivery grace before aborting the registration.
+11. Repeat with Routes API unavailable and then with both Google surfaces unavailable; verify the labelled authored fallbacks complete the same workflow and select the same winning plan with the same final revision and audit sequence.
+12. Invoke a mutation with a pre-aborted invocation signal and verify `ABORTED`, no revision change, and no audit append. If a slice introduces genuine asynchronous work, also cancel it in flight; do not add a fake delay solely for this test.
 13. Verify the audit actor sequence proves ownership: human activation, agent evaluation, agent staging, human approval, agent commit, and agent rollback.
+14. Trigger rapid phase notifications with delayed registration promises and verify the final registered set matches the latest phase without duplicate tools.
+15. Force an ephemeral notification/rendering failure after a successful mutation and verify the agent still receives the authoritative success result.
 
 Use Chrome's real browser-agent or Model Context Tool Inspector surface for the natural-language run. A deterministic local smoke may use Chrome's developer `document.modelContext.executeTool(...)` test path, but that consumer-only method must not become a production application dependency.
 
-## Internal build order
+## Judge-first demonstration contract
 
-### Slice 0 — repository contract and toolchain
+The public video is under three minutes, includes audio, and shows the running product in the first 10–15 seconds. It must demonstrate native browser-agent participation rather than only manual fallback buttons.
 
-- scaffold Next.js only when implementation begins;
-- configure strict TypeScript, lint, unit/contract test, build, CI, and environment templates;
-- add directories only with real files required by the slice;
-- configure Playwright for Linux CI without making a new local browser download a hard gate.
+| Time | Evidence |
+|---|---|
+| 0:00–0:15 | Active obstruction, degraded KPIs, simulated-data label, and the operator objective |
+| 0:15–0:40 | Agent discovers/calls snapshot and evaluation tools; visible activity and structured results |
+| 0:40–1:05 | Three calculated plans, metric provenance, hard failures, trade-offs, and deterministic recommendation |
+| 1:05–1:25 | Agent stages the plan; approval drawer opens; commit capability is visibly absent |
+| 1:25–1:45 | Human approves the exact plan/revision; commit capability appears |
+| 1:45–2:05 | Agent commits; operational projection and KPIs enter `RECOVERED` |
+| 2:05–2:25 | Audit proves HUMAN/AGENT ownership and exact revision sequence |
+| 2:25–2:42 | Agent rolls back operational state while audit remains append-only |
+| 2:42–2:55 | One architecture frame: existing platform -> governed recovery layer -> human-authorized action |
 
-### Slice 1 — deterministic domain
+The narration must say that the data and outcomes are simulated projections. It must explain why WebMCP is essential: the agent receives a safe, state-shaped capability surface instead of guessing through UI controls, and it cannot create its own approval.
 
-- authored scenario types and seed;
-- the seven-phase state machine;
-- human-controlled incident activation and reset use cases;
-- three candidate plans;
-- metrics, hard constraints, ranking, and unit tests;
-- revision semantics and `OperationalSnapshot` rollback contract.
+## Public WebMCP evidence
 
-### Slice 2 — command-center shell
+The repository must include a dated evidence report for the submitted release with:
 
-- full-screen layout;
-- Google Map with static corridor, station, and vehicle overlays;
-- KPI strip, incident panel, timeline, and human demo controls;
-- visibly labelled authored fallback;
-- separate ephemeral UI state.
+- public deployment URL and release commit SHA;
+- exact Chrome version and WebMCP flag state;
+- origin isolation and `tools` Permissions Policy checks;
+- registered tool names captured for every durable phase;
+- representative serialized success and structured-failure envelopes;
+- revision `1 -> 6` and HUMAN/AGENT audit ownership;
+- commit absent before approval and unavailable after consumption;
+- stale revision, wrong plan, replayed commit, malicious plan ID, and pre-aborted invocation results;
+- Google-unavailable fallback equality;
+- distinction between browser-adapter E2E evidence and manual native-Chrome evidence.
 
-### Slice 3 — application use cases
+Screenshots must include the incident hero, calculated plan comparison, human approval boundary, recovered state, and preserved audit after rollback. Do not expose keys, credentials, raw route responses, or private browser chrome.
 
-- inspect, evaluate, stage, human approve, commit, rollback, and audit;
-- atomic expected-revision checks;
-- approval binding to the resulting `APPROVED` revision;
-- operational-only snapshots and append-only audit;
-- common success/failure envelopes.
+## Required release proof
 
-### Slice 4 — Chrome 150 WebMCP
+Before recording the final video:
 
-- official `webmcp-types` declarations;
-- `document.modelContext` adapter;
-- six exact tool definitions, JSON schemas, Zod validation, and annotations;
-- drain-aware registration with registration controllers and in-flight tracking;
-- propagation of invocation `AbortSignal`;
-- visible ephemeral activity and contract tests;
-- manual Chrome 150 real-WebMCP smoke test.
+1. Public GitHub CI is green at the release SHA.
+2. The public HTTPS deployment identifies the same SHA or release.
+3. The live URL works in an incognito session without local state assumptions.
+4. The full workflow succeeds twice after Reset.
+5. The golden workflow succeeds with Google unavailable.
+6. Chrome 150 native WebMCP and the browser-adapter E2E both pass.
+7. The UI remains usable at 1366×768 and 1440×900 with keyboard access.
+8. The repository shows the live URL, MIT license, testing instructions, screenshots, architecture, limitations, and video link.
 
-### Slice 5 — Google route context
+## Deadline and freeze
 
-- server-side Routes proxy;
-- bounded normalized route context;
-- in-session cache;
-- deterministic authored fallback;
-- proof that live traffic cannot change the canonical winning plan;
-- API failure tests.
+The official submission deadline is September 3, 2026 at 1:00 PM Pacific Time, which is September 3 at 10:00 PM South Africa Standard Time. September 6 is not the submission deadline.
 
-### Slice 6 — polish and submission
+Target code freeze is September 2 at noon SAST. Submit by September 3 at 4:00 PM SAST to retain a six-hour buffer. After the official deadline, do not modify the submission, repository, video, or live deployment during judging.
 
-- complete recovery animation and approval UX;
-- Linux CI Playwright golden flow;
-- deployed smoke test;
-- README, architecture diagram, screenshots, and diagnostics;
-- under-three-minute public demo video;
-- submission freeze.
-
-## Recommended Slice 0 prompt
-
-```text
-Read AGENTS.md and every file in docs/. Do not change product scope.
-
-Implement Slice 0 only. Scaffold the Next.js TypeScript repository using pnpm, configure strict type checking, linting, Vitest, production build, environment validation, and CI. Configure Playwright for Linux CI without making the latest local Playwright browser a hard gate. Add a minimal full-screen placeholder route that states “SIMULATED OPERATIONS • GOOGLE MAPS CONTEXT”.
-
-Create architecture directories only when the slice adds a real file; do not create empty folders or .gitkeep placeholders. Before editing, report files and verification commands. After editing, run lint, typecheck, unit tests, and build. Do not add Google Maps, WebMCP, or product-domain implementation. Stop after Slice 0 and summarize the diff and risks.
-```
-
-## Recommended Slice 1 prompt
-
-```text
-Read AGENTS.md and every file in docs/. Implement Slice 1 only: deterministic domain and application contracts. Do not create React components or call external APIs.
-
-Implement the seven durable phases exactly as documented, canonical authored scenario, domain events, three recovery candidates, hard-constraint evaluation, transparent metrics, deterministic ranking, exact once-per-mutation revision semantics, approval value types, and operational-only rollback snapshots. Incident activation/reset and approval remain human application use cases, not WebMCP tools.
-
-Add tests for replay determinism, accessibility hard failure, stale revisions, legal and illegal transitions, ranking, approval revision binding, and rollback exclusions. Run local hard gates and stop after Slice 1.
-```
+`docs/CHALLENGE_PLAN.md` owns the remaining execution sequence and cut lines. `docs/RECOVERY_ENGINE.md` owns the counterfactual model implementation contract.

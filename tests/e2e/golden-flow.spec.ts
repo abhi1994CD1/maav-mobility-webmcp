@@ -30,6 +30,6 @@ test("complete human-governed fallback workflow", async ({ page }) => {
   await expect(auditDrawer).toBeHidden();
 
   await page.getByRole("button", { name: "Roll back recovery" }).click();
-  await expect(page.getByText("ROLLED BACK")).toBeVisible();
+  await expect(page.getByText("ROLLED BACK", { exact: true })).toBeVisible();
   await expect(page.getByText("6 events")).toBeVisible();
 });

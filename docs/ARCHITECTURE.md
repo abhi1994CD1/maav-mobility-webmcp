@@ -1,427 +1,373 @@
-# Architecture
+# MAAV Stress Lab Architecture
+
+## Status and ownership
+
+This document owns target system boundaries, dependency direction, artifact
+flow, state ownership, adapter responsibilities, and atomic command behavior.
+Gate 1 defines this architecture without implementing it. The current baseline
+runtime remains separate until later gated slices build and verify Stress Lab.
 
 ## Architectural style
 
-The application is a modular monolith with hexagonal boundaries. UI, WebMCP, and Google integrations are adapters around one application API and a pure domain core.
+MAAV Stress Lab is a modular monolith with hexagonal boundaries:
 
 ```text
-┌──────────────────────────┐  ┌──────────────────────────┐
-│ Human UI adapter         │  │ WebMCP adapter           │
-│ React / map / controls   │  │ schemas / registry       │
-└─────────────┬────────────┘  └─────────────┬────────────┘
-              │ same commands and queries  │
-              └─────────────┬──────────────┘
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│ Application use cases                                   │
-│ revision checks • transition checks • atomic repository │
-│ domain invocation • event and audit append              │
-└───────────────────┬─────────────────────┬───────────────┘
-                    │                     │ ports
-                    ▼                     ▼
-┌────────────────────────────┐  ┌─────────────────────────┐
-│ Domain core                │  │ Infrastructure adapters │
-│ simulation • constraints   │  │ Google • session state  │
-│ scoring • governance       │  │ authored fallback       │
-└────────────────────────────┘  └─────────────────────────┘
+React manual UI ───────────────┐
+Six static WebMCP adapters ────┼──> StressLab application service
+                              │             │
+Google/SVG/list projections ──┘             ├──> pure deterministic domain
+Zustand repository adapter <────────────────┘
 ```
 
-Layer direction is:
+Dependency direction is:
 
 ```text
-UI / WebMCP / Google adapters -> application use cases -> domain model
+UI / WebMCP / Google / Zustand adapters
+                  ↓
+          application services
+                  ↓
+               domain
 ```
 
-The domain and application layers must not import React, Next.js, browser APIs, Google Maps, WebMCP, or Zustand. A React control and a WebMCP handler for the same capability call the same application use case; neither adapter contains domain rules.
+The domain and application layers must not import React, Next.js, Zustand,
+Google Maps, browser APIs, WebMCP APIs, network clients, or presentation state.
+They must not read `Date.now()`, `Math.random()`, animation frames, browser
+locale ordering, or live Google responses when producing evidence.
 
-## Runtime responsibilities
+## Artifact lifecycle
 
-### Command-center UI
+The lab does not use one linear global workflow phase. Scenario A and Scenario B
+may independently have current or historical runs. The authoritative lifecycle
+is a graph of immutable artifacts:
 
-- Render the Google base map and synthetic operational overlays.
-- Render KPIs, incident details, plan comparisons, approval, audit, and reset controls.
-- Collect the operator's explicit approval and canonical incident/reset commands.
-- Render transient tool status, loading, and recovery animation without changing domain revision.
+```text
+Scenario Revision
+  -> Run Artifact
+  -> Comparison Artifact
+  -> Finding Artifact
+  -> Human Review
+```
 
-### Application services
+- A configuration or disruption change creates a new scenario revision.
+- A run captures one immutable scenario revision, shared demand fingerprint,
+  engine version, network version, seed, and disruption set.
+- A comparison references two explicit compatible completed run IDs.
+- A finding references one comparison and an evidence hash.
+- Accept or Challenge references the exact current finding/evidence version.
 
-- Validate `expectedRevision` and legal phase transitions.
-- Invoke deterministic domain calculations.
-- Update the revisioned repository atomically.
-- Append domain events and audit records as part of the same mutation.
-- Return compact typed DTOs and structured failures.
+Artifacts are never rewritten. A currentness selector may mark historical runs,
+comparisons, and findings stale when their inputs are no longer current.
+Historical evidence remains inspectable.
 
-### Domain core
+## H0 context and controlled treatment
 
-Pure TypeScript modules own network, fleet, demand, incident, deterministic simulation, recovery constraints and scoring, governance, metrics, and audit event definitions.
+The canonical experiment shares:
 
-Use small pure functions, explicit domain types, discriminated command results, and immutable updates at domain boundaries. Avoid `any`; narrow `unknown`. Keep files focused, use comments for rationale, generate audit timestamps as UTC ISO strings from a simulated service clock, and keep scenario IDs stable and externally opaque.
+- versioned network `sandton-rosebank-v1`;
+- 120-request seed-07 demand trace;
+- 08:30–09:00 horizon with 30-second ticks;
+- metric-definition and engine versions;
+- maximum wait of 180 seconds;
+- minimum battery reserve of 20%.
+
+Scenario A has 12×8 seats and Scenario B has 10×10 seats. Each receives an
+equivalent failure at 08:42. The target is resolved independently by highest
+onboard occupancy, then reserved-passenger count, active-service state, and
+ascending vehicle ID. Equal rule, time, demand, engine, and network define the
+controlled treatment; equal vehicle IDs are not required.
+
+## Layer responsibilities
+
+### Domain
+
+Pure TypeScript domain modules own:
+
+- versioned network and scenario types;
+- seeded passenger trace generation;
+- deterministic dispatch, movement, boarding, service, battery, energy,
+  failure, and recovery;
+- immutable events and replay snapshots;
+- metric and hard-constraint derivation;
+- artifact compatibility and deltas;
+- evidence-bound finding candidates;
+- canonical serialization and evidence fingerprints;
+- invariants and safe failures.
+
+The domain never authors final KPI tables, preferred-scenario constants, or
+agent prose. `docs/SIMULATION_ENGINE.md` owns exact simulation rules.
+
+### Application
+
+One `StressLabService`-shaped boundary owns:
+
+- queries and commands shared by manual UI and WebMCP;
+- complete validation and normalization before mutation;
+- expected-revision and idempotency checks;
+- prerequisite, compatibility, and stale-evidence enforcement;
+- cancellation propagation;
+- local computation against immutable inputs;
+- compare-and-swap repository commit;
+- durable audit append and safe result mapping;
+- human-only Accept, Challenge, and Reset commands.
+
+No adapter may bypass this service to mutate revisioned state.
+
+### Repository adapter
+
+The application depends on a repository port, not Zustand. The H0
+infrastructure adapter keeps tab-scoped in-memory/session state and supports an
+atomic compare-and-swap commit.
+
+Repository responsibilities:
+
+- return immutable state snapshots;
+- atomically commit only when the expected workspace revision still matches;
+- notify subscribers after commit;
+- retain immutable artifacts and current pointers;
+- keep operation/idempotency records within the tab session.
+
+It does not calculate simulation results, infer tool prerequisites, or contain
+React behavior.
 
 ### WebMCP adapter
 
-- Detect the Chrome 150 `document.modelContext` surface.
-- Register precisely state-gated tools through one central registry.
-- Runtime-validate every input with Zod.
-- Invoke application use cases and serialize the common result envelope.
-- Track in-flight executions and defer tool removal until they drain.
-- Propagate invocation cancellation to cancellable work.
-- Publish invocation status to the ephemeral activity rail.
+The browser adapter:
 
-### Google adapters
+- detects Chrome 150 `document.modelContext`;
+- statically registers the exact six tools once after the store is ready;
+- validates strict input again at runtime;
+- injects trusted actor/source context;
+- forwards the invocation `AbortSignal`;
+- calls the shared application service;
+- serializes compact common envelopes;
+- renders best-effort visible activity after obtaining the authoritative result.
 
-- Use the pinned `@vis.gl/react-google-maps` React presentation adapter and its `APIProvider`; do not maintain a second manual Maps JavaScript loader.
-- Run Maps JavaScript API only in the browser with the referrer-restricted `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`; `NEXT_PUBLIC_GOOGLE_MAP_ID` selects the map style and is not a Routes credential.
-- Treat `GOOGLE_ROUTES_API_KEY` as optional and call Routes API only through a narrow server route handler with that API-restricted server key; never send it to the browser.
-- Request only traffic-aware duration, static duration, distance, and encoded route geometry for the fixed Rosebank-Sandton segment. Normalize them into a bounded internal route-presentation DTO and retain it only in browser memory for the demo session.
-- Supply a clearly labelled authored fallback when Routes API is unavailable.
-- Keep map loading, failure, camera, selection, and overlay animation state ephemeral so Google availability never changes domain revision or recovery results.
+All tools remain discoverable. Application-level preconditions return structured
+errors for premature calls. Registration timing is not authorization.
 
-## Code boundaries
+### Human UI
 
-The implementation follows these boundaries. Add deeper modules only when an implemented slice requires them; do not create empty directories or `.gitkeep` placeholders.
+The React UI:
 
-```text
-src/
-  app/                    # Next.js routes and narrow server handlers
-  application/            # use cases, commands, queries, and ports
-  domain/                 # pure models, governance, simulation, scoring
-  infrastructure/
-    google/               # Maps and Routes adapters
-    webmcp/               # browser adapter and drain-aware registry
-    persistence/          # in-memory/session repository adapters only
-  features/command-center # React feature composition
-  state/                  # Zustand-backed adapters and ephemeral UI state
-  ui/                     # reusable presentational components
-  data/scenarios/         # authored synthetic scenario seeds
-tests/
-  unit/
-  contract/
-  e2e/
-```
+- edits and validates A/B scenario drafts through application commands;
+- invokes the same run, disruption, comparison, and staging services as tools;
+- projects immutable replay evidence into forms, metrics, timeline, map, and
+  fallback surfaces;
+- displays stale/current/compatible status and tool activity;
+- exposes human-only Accept, Challenge, and deterministic Reset;
+- never calculates an alternate KPI or directly mutates Zustand domain state.
 
-## Workflow state machine
+### Google and fallback adapters
 
-The authoritative durable phases and forward transitions are:
+Google Maps renders geographic context from an infrastructure-owned
+presentation model. It may provide:
 
-```text
-READY
-  -> INCIDENT_ACTIVE
-  -> OPTIONS_EVALUATED
-  -> PLAN_STAGED
-  -> APPROVED
-  -> RECOVERED
-  -> ROLLED_BACK
-```
+- enterprise basemap and attribution;
+- Advanced Markers;
+- authored route/network overlays;
+- supported GeoJSON, polygon, and line layers;
+- selection and interaction.
 
-| From | To | Trigger owner | Use case |
-|---|---|---|---|
-| `READY` | `INCIDENT_ACTIVE` | Human/demo UI | Activate the canonical incident |
-| `INCIDENT_ACTIVE` | `OPTIONS_EVALUATED` | Human UI or WebMCP | Evaluate recovery options |
-| `OPTIONS_EVALUATED` | `PLAN_STAGED` | Human UI or WebMCP | Stage one evaluated plan |
-| `PLAN_STAGED` | `APPROVED` | Human UI only | Approve the currently staged plan |
-| `APPROVED` | `RECOVERED` | Human UI or WebMCP | Commit the approved recovery |
-| `RECOVERED` | `ROLLED_BACK` | Human UI or WebMCP | Roll back the committed recovery |
+Both Google and the authored SVG/list fallback consume the same replay-derived
+presentation frame. Neither executes the simulator or changes evidence.
 
-`PLAN_STAGED` means the selected recovery is staged and waiting for explicit human approval. There is no separate `AWAITING_OPERATOR_APPROVAL` phase. `running`, `executing`, `animating`, and similar labels belong to ephemeral UI/tool activity state; there is no durable `APPLYING` phase.
+## State ownership
 
-The human-only Reset scenario use case is an exceptional demo control rather than a browser-agent workflow transition. On an existing session it restores canonical operational values, clears evaluated/staged/approval/rollback governance, enters `READY`, appends a reset audit event, and increments revision exactly once. Fresh initialization may start at revision 0. Human incident activation and reset are revision-checked application use cases and are not public WebMCP tools.
+### Revisioned application/domain state
 
-An invalid transition or stale command returns a structured failure and changes neither revisioned state nor audit history. The ephemeral activity rail may still display the failed attempt.
+Revisioned state includes:
 
-## Revisioned state and ephemeral UI state
+- workspace revision and experiment identity;
+- fixed engine, network, metric, demand, horizon, and seed references;
+- immutable scenario revisions;
+- immutable run artifacts and their ledgers/snapshots;
+- immutable comparison artifacts;
+- finding artifacts and human-review records;
+- current artifact pointers and stale/current derivation inputs;
+- idempotency records where retained with the session;
+- append-only sanitized audit entries.
 
-Revisioned application/domain state contains operational truth and governance:
+Every successful domain mutation increments workspace revision exactly once.
+Queries do not.
 
-```ts
-type OperationalPhase =
-  | "READY"
-  | "INCIDENT_ACTIVE"
-  | "OPTIONS_EVALUATED"
-  | "PLAN_STAGED"
-  | "APPROVED"
-  | "RECOVERED"
-  | "ROLLED_BACK";
+### Ephemeral UI and operation state
 
-interface OperatorApproval {
-  planId: string;
-  validForRevision: number;
-  consumed: boolean;
-}
+Ephemeral state includes:
 
-interface OperationalState {
-  network: NetworkState;
-  fleet: FleetState;
-  demand: DemandState;
-  simulatedTime: string;
-  activeIncident?: Incident;
-  metrics: OperationalMetrics;
-}
+- map readiness, camera, bounds, layers, and selected object;
+- active panel, dialog, focus restoration, and disclosure state;
+- playback time, speed, animation interpolation, and reduced-motion projection;
+- transient form editing before application submission;
+- tool/manual activity rendering and wall-clock duration;
+- genuine run progress and cancellable operation handles;
+- notices, loading, error presentation, and map retry state.
 
-interface CommandCenterState {
-  revision: number;
-  scenarioId: string;
-  phase: OperationalPhase;
-  operational: OperationalState;
-  evaluatedPlans: RecoveryPlan[];
-  stagedPlanId?: string;
-  approval?: OperatorApproval;
-  lastCommittedOperationalSnapshot?: OperationalSnapshot;
-  audit: AuditEvent[];
-}
-```
+Ephemeral changes never increment workspace revision, create evidence, alter an
+artifact fingerprint, or invalidate a finding.
 
-Ephemeral UI state is not part of `CommandCenterState`:
+## Command transaction
 
-```ts
-interface CommandCenterUiState {
-  mapCamera: MapCamera;
-  selectedFeatureId?: string;
-  openPanels: PanelId[];
-  animationProgress?: number;
-  agentActivity: AgentActivityItem[];
-  pendingOperations: PendingOperation[];
-}
-```
+Every mutation follows one atomic path:
 
-Map focus, selection, panel visibility, tool activity rendering, loading/execution indicators, and animation progress never increment domain revision. A read-only tool may visibly focus the map or open a panel through this UI state while leaving revisioned state unchanged.
+1. receive trusted source plus strictly validated command;
+2. compare `expectedRevision`;
+3. resolve idempotency by operation ID and canonical arguments;
+4. validate lifecycle prerequisites and artifact currentness;
+5. capture immutable engine/network/demand/scenario/disruption inputs;
+6. check cancellation;
+7. calculate complete next state or artifact locally;
+8. validate domain invariants and supported evidence;
+9. check cancellation immediately before commit;
+10. compare-and-swap the state and append audit once;
+11. wait until subscribers can observe the resulting revision;
+12. return the authoritative envelope;
+13. render best-effort ephemeral activity.
 
-Zustand may back `CommandCenterUiState` and may implement an infrastructure repository adapter for `CommandCenterState`. Application and domain code depend only on repository ports and never import Zustand.
+Validation, prerequisite, compatibility, cancellation, calculation, or
+revision failure produces no partial mutation. If another command wins the
+race, return `REVISION_CONFLICT`; do not silently rebase consequential work.
 
-## Mutation and revision semantics
+## Revision and idempotency
 
-Every successful domain mutation is one atomic transaction:
+- Every mutator requires the current workspace revision.
+- Two writes against one revision produce at most one success.
+- Every mutating WebMCP call requires an operation ID.
+- Same ID, same tool, and same canonical arguments return the original terminal
+  result without another artifact or revision.
+- Same ID with different tool or arguments returns
+  `IDEMPOTENCY_CONFLICT`.
+- A cancelled operation ID is terminal; a corrected retry uses a new ID.
+- Late results may be retained as explicit historical evidence only when the
+  contract allows it; they never replace newer current state.
 
-1. Compare `expectedRevision` with the current revision.
-2. Validate the command and current phase.
-3. Calculate the complete next state.
-4. Apply operational/governance changes and append required events/audit entries.
-5. Increment revision exactly once and publish the result.
+## Cancellation
 
-The audit append within that transaction does not cause a second revision increment. Failed validation, stale revision, illegal transition, or cancellation before commit produces no domain mutation and no revision increment. Queries and ephemeral UI updates never increment revision.
-
-The canonical revision sequence for a fresh session is:
+The invocation cancellation signal flows:
 
 ```text
-READY revision 0
-human activates incident at expectedRevision 0 -> INCIDENT_ACTIVE revision 1
-evaluate at expectedRevision 1              -> OPTIONS_EVALUATED revision 2
-stage at expectedRevision 2                 -> PLAN_STAGED revision 3
-human approves at expectedRevision 3        -> APPROVED revision 4
-commit at expectedRevision 4                -> RECOVERED revision 5
-rollback at expectedRevision 5              -> ROLLED_BACK revision 6
+WebMCP/UI operation
+  -> application validation
+  -> optional route-preparation presentation work
+  -> deterministic tick loop
+  -> metric/result assembly
+  -> atomic commit guard
 ```
 
-## Approval protocol
+The pure engine itself remains deterministic; an async wrapper yields
+periodically for responsiveness. Yield timing never enters events, metrics, or
+fingerprints. Cancellation produces exactly one terminal state,
+`COMPLETED` or `CANCELLED`, never both. A cancelled run publishes no
+comparison-ready KPI set and cannot later ghost-commit.
 
-1. `stage_recovery_plan(planId, expectedRevision=2)` verifies revision 2 and an evaluated plan, then returns `PLAN_STAGED` at revision 3.
-2. The UI displays that exact staged plan and its calculated impact.
-3. The human clicks Approve with `expectedRevision=3`.
-4. Approval is one mutation. It returns `APPROVED` at revision 4 and stores:
+## Deterministic evidence boundary
 
-```json
-{
-  "planId": "combined_recovery_c",
-  "validForRevision": 4,
-  "consumed": false
-}
-```
+Evidence-changing inputs are limited to versioned authored and user-configured
+experiment data:
 
-5. Only after that mutation may the registry expose `commit_approved_recovery`.
-6. Commit must atomically require all of the following:
-   - current revision equals the command's `expectedRevision`;
-   - `approval.validForRevision` equals the current revision;
-   - approval `planId` equals the command `planId` and staged plan;
-   - `approval.consumed` is `false`;
-   - current phase is `APPROVED`.
-7. A valid commit captures the operational snapshot, applies the recovery, sets `consumed: true`, appends events/audit, increments revision once, and enters `RECOVERED`.
+| Input | Evidence authority |
+|---|---|
+| Network distance/travel time | Versioned authored fixture |
+| Passenger arrivals | Shared seeded demand trace |
+| Fleet and constraints | Immutable scenario revision |
+| Failure | Immutable disruption specification and deterministic selector |
+| Events and vehicle/passenger state | Simulation engine |
+| Metrics and hard constraints | Event-ledger fold |
+| Comparison deltas | Compatible explicit run artifacts |
+| Finding claims | Deterministic evidence builder |
 
-Any intervening domain mutation invalidates an approval because the current revision no longer equals `validForRevision`; non-commit mutations also clear an unconsumed approval. Registry timing is never an authorization boundary: the commit use case always rechecks every precondition.
+These are presentation-only and cannot change evidence:
 
-## Safe rollback
+- Google basemap, route enrichment, or availability;
+- map camera, selection, and layers;
+- SVG versus Google renderer;
+- playback speed and animation;
+- browser-agent wording;
+- UI wall-clock timestamps and activity duration.
 
-Rollback never snapshots or restores the entire `CommandCenterState`. Immediately before a valid commit applies operational changes, capture only the values needed to reverse that recovery:
+## Comparison and finding safety
 
-```ts
-interface OperationalSnapshot {
-  network: NetworkState;
-  fleet: FleetState;
-  demand: DemandState;
-  simulatedTime: string;
-  activeIncident?: Incident;
-  metrics: OperationalMetrics;
-}
-```
+A comparison is authoritative only when both runs:
 
-An `OperationalSnapshot` must not contain or restore:
+- completed successfully and are current for their scenario revisions;
+- represent slots A and B;
+- share engine, network, demand, seed, horizon, tick, metric version, and
+  equivalent disruption policy;
+- differ only in disclosed scenario configuration.
 
-- `phase`;
-- `revision`;
-- approval records;
-- evaluated or staged-plan governance;
-- audit history;
-- agent activity or any other UI state.
+Incompatible runs may be inspected side by side but produce no authoritative
+deltas or finding artifact.
 
-`rollback_last_recovery` is legal only in `RECOVERED` with a matching `expectedRevision` and an available snapshot. It restores the operational fields, clears evaluated plans, staged-plan state, approval, and the consumed rollback snapshot, appends rollback domain/audit events, increments revision exactly once, and enters `ROLLED_BACK`. Audit history stays append-only. The activity rail remains an independent UI history and is not rewound.
+The finding builder accepts identifiers and bounded emphasis, never caller-
+supplied evidence numbers. It generates a small set of claims whose metric keys,
+values, and evidence IDs resolve to the comparison. A browser agent may explain
+the result conversationally, but its prose is not stored as evidence.
 
-## Deterministic counterfactual decision core
+Accept and Challenge are visible human commands. They bind the exact finding
+and evidence version. Acceptance is neither operational authorization nor
+scientific certification.
 
-The decision core is a bounded passenger-flow projection, not a lookup table, general route optimizer, LLM, or real transport simulator. `docs/RECOVERY_ENGINE.md` owns the implementable data model, formulas, and acceptance tests.
+## Google boundary and degradation
 
-Its authoritative pipeline is:
+The simulator reads only the frozen authored network fixture. Google never
+determines distance, travel time, dispatch, battery, energy, constraints,
+comparison, preferred scenario, or finding.
+
+Browser Maps and optional server Routes keys remain separate and restricted.
+No Google response, route polyline, place content, or key enters revisioned
+state, the event ledger, artifact fingerprints, audit evidence, or tool output.
+
+On missing key, authentication error, quota, timeout, or network failure:
 
 ```text
-current incident snapshot
-+ immutable scenario model
-+ operator objectives
-+ action-only recovery candidates
-        |
-        v
-feasibility compiler
-        |
-        v
-minute-step counterfactual projection
-        |
-        v
-derived metrics
-        |
-        v
-hard-constraint safety kernel
-        |
-        v
-normalized deterministic ranking
+Google presentation DEGRADED
+  -> authored interactive SVG
+  -> structured zones/routes/vehicles/disruptions list
+  -> unchanged simulator, tools, evidence, and human review
 ```
 
-Candidate definitions may author vehicle assignments, service patterns, headways, activation delays, travel assumptions, and energy rates. They must not contain their final KPI outcomes. Every candidate begins from an independent clone of the same incident snapshot. Evaluation receives operational state; it may not calculate from objectives alone.
+The UI labels degradation honestly and preserves Google attribution whenever a
+Google surface is present.
 
-The feasibility compiler rejects structurally invalid resource assignments, blocked-segment traversal, and missing reserve capacity before simulation. Insufficient accessible service remains a visible calculated outcome: the simulator reports the accessibility deficit and the hard-constraint kernel rejects the plan. The simulator also derives on-time percentage, maximum and mean wait, affected and unserved passengers, spare vehicles used, energy delta, and recovery time. Hard constraints run before soft scoring; a score can never compensate for an accessibility failure.
+## Security and failure strategy
 
-An evaluated plan stores the exact candidate-specific operational projection reviewed by the human. Commit applies that stored projection only after the existing approval and revision checks. It does not recalculate against changed inputs and does not apply a shared hardcoded recovery mutation. Rollback continues to restore the narrow pre-commit `OperationalSnapshot`.
+- Use a secure origin-isolated top-level document allowed by the `tools`
+  Permissions Policy; never set `document.domain`.
+- Validate all IDs, labels, enums, units, ranges, revisions, operation IDs,
+  and artifact relationships.
+- Bound and render user-authored labels/challenge feedback as text.
+- Return structured safe errors; never return keys, raw prompts, storage,
+  stack traces, unrestricted URLs, or unnecessary third-party prose.
+- A hostile label cannot change tool order, authority, evidence, or rendering
+  behavior.
+- Internal invariant failure returns `ENGINE_INVARIANT_FAILED` and no
+  complete metrics.
+- Unsupported WebMCP keeps the entire manual workflow available and records no
+  fake agent activity.
 
-Application mappers expose compact plan summaries, metric deltas, bounded explanation codes, score components, and calculation provenance. They never spread internal cohorts, assignments, or projections into WebMCP or UI results.
+## Intended implementation map
 
-### Integration seam, not integration claim
-
-The authored scenario provider is the current operational-input adapter. The domain core accepts internal operational types rather than vendor payloads. A future fleet-management adapter could normalize an incumbent snapshot into those types, but this repository does not implement or claim a live fleet connector, dispatch write-back, safety certification, or customer deployment.
-
-### Google boundary
-
-Live Google route or traffic context may enrich map geometry, bounded route context, and informational display. It is not an input to canonical hard constraints or scoring. Runs with `GOOGLE`, different live delay, or `AUTHORED_FALLBACK` must therefore produce byte-identical canonical plan metrics and ranking. No Google call occurs inside the deterministic decision core.
-
-The full North Spine remains the authored simulated operational corridor in `OperationalState`. Google Routes supplies a road-shaped presentation overlay only for the fixed Rosebank-Sandton affected segment. On a Google Maps surface, the authored spine remains visible as a subdued operational backbone while the Google segment is prominent and receives the simulated `HEALTHY`, `DISRUPTED`, or `RECOVERED` status colour. When Routes is unavailable or invalid, the authored operational path becomes the prominent route. The authored SVG never attempts to reproduce Google geometry.
-
-The infrastructure-owned route-presentation DTO adds `staticDurationSeconds` and an optional bounded `encodedPolyline` to the existing informational route metrics. It exists only in ephemeral UI state. Encoded geometry is never placed in `CommandCenterState`, `OperationalSnapshot`, audit, approval, recovery plans, application commands, or WebMCP results, and is never persisted. `delaySeconds` is `max(0, traffic-aware duration - static duration)`; it is a traffic-aware session snapshot, not a continuous feed, fleet truth, passenger truth, or recovery-scoring input.
-
-The four presentation outcomes are authoritative:
-
-| Maps JavaScript | Routes context | Label | Route rendering |
-|---|---|---|---|
-| Ready | Google | `GOOGLE MAPS + ROUTES CONTEXT` | Subdued authored spine plus prominent encoded Google segment |
-| Ready | Authored fallback | `GOOGLE MAPS • AUTHORED ROUTE FALLBACK` | Prominent authored operational path |
-| Unavailable | Google | `AUTHORED MAP • GOOGLE ROUTE CONTEXT` | Authored SVG only; normalized Google metrics remain informational |
-| Unavailable | Authored fallback | `AUTHORED MAP + ROUTE FALLBACK` | Fully authored deterministic presentation |
-
-The model uses no wall-clock time or unseeded randomness. Any future stochastic behavior must use the scenario's explicit seeded PRNG and preserve reproducible tests.
-
-## Human-authorized WebMCP capability choreography
-
-WebMCP is a phase-shaped capability surface, not a static RPC menu. Domain phase determines which consequential capability is discoverable, while application preconditions remain the authorization boundary.
+Implementation is additive at `/lab` until every H0 gate is green. The
+approved planning sources contain the sequenced repository map. Do not create
+the folders below during Gate 1:
 
 ```text
-INCIDENT_ACTIVE     -> evaluate capability
-OPTIONS_EVALUATED  -> stage capability
-PLAN_STAGED        -> no agent commit capability
-human approval     -> revision-bound commit capability appears
-RECOVERED          -> rollback capability replaces commit
+domain/stress-lab
+application stress-lab service and repository port
+infrastructure WebMCP, persistence, Google and fallback adapters
+features/stress-lab React composition
+tests unit, contract and E2E
 ```
 
-This creates four independent protections:
+Only after the manual flow, real WebMCP flow, build, deployment smoke, and
+fallback paths pass may the root route cut over and legacy runtime code be
+removed. The tagged superseded product remains a release contingency, not part
+of Stress Lab.
 
-1. discovery communicates the legal next action;
-2. runtime schemas reject malformed requests;
-3. phase, revision, plan, and approval checks reject stale or replayed calls;
-4. the visible UI retains the human-only decision.
+## Documentation ownership
 
-The snapshot query returns compact recovery context after agent context loss: next actor/action, recommended/staged/approved plan IDs when present, and rollback availability. It returns no approval secret or unrestricted state.
-
-Tool results are domain-authoritative. Ephemeral activity, announcements, panel focus, and animation are best-effort effects after the application result exists. A rendering failure must not convert a committed mutation into an `INTERNAL_ERROR` response.
-
-Trusted tool results do not reflect arbitrary caller text. In particular, invalid plan identifiers produce stable generic errors. User-supplied rollback reasons appear only through the audit output that declares `untrustedContentHint: true`.
-
-## Chrome 150 WebMCP contract
-
-Use the imperative Chrome 150 surface at `document.modelContext`; never read or fall back to `navigator.modelContext`. Use the official `webmcp-types` package as the TypeScript declaration source.
-
-Each registered definition includes:
-
-```ts
-{
-  name,
-  title,
-  description,
-  inputSchema,
-  annotations,
-  execute: async (input, { signal }) => { /* adapter -> use case */ }
-}
-```
-
-`inputSchema` is serializable JSON Schema and Zod validates the input again at runtime. The invocation `signal` is propagated to cancellable route requests and other asynchronous work. Do not add an `outputSchema` field unless the target WebMCP API is deliberately upgraded and the contract is reviewed.
-
-### Drain-aware registration lifecycle
-
-One central coordinator owns the latest desired phase and serializes/coalesces reconciliation. One central registry owns every registered tool's registration `AbortController`, desired/registered status, and in-flight execution count. Overlapping phase notifications must converge on the newest desired tool set even when `registerTool()` promises resolve out of order.
-
-1. A phase notification replaces the coordinator's desired definitions; it does not start an independent reconciliation race.
-2. Registration creates one controller and passes its signal to `document.modelContext.registerTool`.
-3. The `execute` wrapper increments the tool's in-flight count before validation/use-case dispatch and decrements it in `finally`.
-4. If a tool should be removed while its count is nonzero, mark removal pending; do not abort its registration or replace the same name.
-5. After the last callback settles, defer removal through a short post-settlement task/grace before aborting that tool's registration controller. Chrome 150 can otherwise reject the caller after the domain mutation has already committed because result delivery is still finishing.
-6. If the tool becomes desired again before draining, cancel the pending removal rather than churn the registration.
-7. Reconciliation repeats until the registered set equals the newest desired set.
-8. Bridge teardown remains authoritative until registrations and in-flight executions have drained; a remount must not create a second registry for the same document during teardown.
-
-Do not assume a later Chrome `unregisterTool` API or Chrome-153-or-later lifecycle behavior. Delayed registry removal can briefly leave a stale tool discoverable, so every mutation use case must enforce phase, revision, and approval preconditions at execution time.
-
-The registration controller owns discoverability; it is not the invocation cancellation signal. Invocation cancellation is handled by `execute(input, { signal })` and must not partially commit a mutation. The adapter forwards a supplied invocation signal into actual cancellable work and provides a non-aborted fallback when Chrome 150's deterministic `executeTool` test path omits the callback options object. Pure synchronous mutations check a pre-aborted signal before their atomic mutation; do not add artificial delays solely to demonstrate cancellation.
-
-## WebMCP browser security
-
-- WebMCP requires a secure, origin-isolated/origin-keyed document and is gated by the `tools` Permissions Policy.
-- Do not enable or assign `document.domain`, because it defeats origin-keyed isolation.
-- This project needs only top-level same-origin tools; do not configure cross-origin iframe exposure.
-- Handle unavailable API, `SecurityError`, and `NotAllowedError` as setup failures without breaking the manual UI.
-- Read-only tools use `readOnlyHint: true`.
-- Use `untrustedContentHint: true` only for a tool whose actual result includes untrusted external or user-supplied content.
-- Prefer normalized codes, numbers, and authored labels over raw third-party free-form text.
-- Never return keys, approval internals beyond safe status, stack traces, or unrestricted mutation capabilities.
-
-## Failure strategy
-
-- Google error: use the labelled authored fallback and continue the full workflow.
-- Unsupported or disallowed WebMCP: keep the manual UI usable and show setup guidance.
-- Invalid input: return the common structured failure with a corrective action.
-- Stale command: return current metadata and ask the agent to re-inspect.
-- Illegal transition or invalid approval: no mutation; report the legal next action.
-- Aborted cancellable work: return an aborted failure if no mutation committed.
-- Domain calculation failure: preserve the previous immutable state.
-
-## Verification environment
-
-The local development target is:
-
-- macOS 12.7.6;
-- Intel x86_64;
-- Google Chrome 150;
-- WebMCP testing flag enabled.
-
-Local hard gates are lint, typecheck, Vitest unit/contract tests, production build, and a manual Chrome 150 real-WebMCP smoke test. The latest locally downloaded Playwright browser is not a development prerequisite. Full Playwright E2E, including the golden flow, may run in Linux CI.
-
-Required automated coverage includes deterministic replay, candidate feasibility, passenger conservation, monotonic demand/capacity/energy properties, objective sensitivity, hard-constraint filtering, plan ranking, invalid transitions, stale revisions, approval binding/invalidation/consumption, candidate-specific commit, operational-only rollback, WebMCP validation, serialized drain-aware registration, stale/replayed/simultaneous calls, trusted/untrusted output handling, Routes fallback equality, and the complete bridge-driven golden flow.
-
-## Deployment
-
-- Vercel application and public GitHub repository.
-- No database; in-memory/session state only.
-- Environment variables only for keys and map ID.
-- Deterministic scenario bundled with the application.
-- Build, unit/contract tests, and Linux bridge-driven E2E in CI.
-- The submitted release SHA must have green public CI, a discoverable HTTPS URL, and a dated native Chrome 150 evidence report.
+- Product behavior and scope: `docs/PRODUCT.md`
+- Simulation and metrics: `docs/SIMULATION_ENGINE.md`
+- Exact WebMCP contracts: `docs/WEBMCP_TOOLS.md`
+- Demonstration: `docs/DEMO.md`
+- Deadline/release strategy: `docs/CHALLENGE_PLAN.md`
+- Full approved planning source: `docs/plans/stress-lab/`

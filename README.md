@@ -1,85 +1,141 @@
-# Nexus Mobility Recovery Command
+# MAAV Stress Lab
 
-A premium, human-governed mobility disruption recovery command center built for the OpenAI WebMCP Challenge.
+> **Design it. Break it. Make it resilient.**
 
-The application exposes six real browser-native WebMCP tools in Google Chrome 150. A browser agent can inspect a deterministic synthetic transport network, evaluate code-scored recovery plans, stage one plan, wait for explicit operator approval, commit only the approved revision, inspect the audit trail, and roll back operational state without erasing governance history.
+MAAV Stress Lab is a browser-native, deterministic counterfactual mobility
+assurance lab for the WebMCP Challenge. It is designed to help a human and a
+browser agent ask a controlled question: how do two synthetic fleet designs
+behave under the same passenger demand and equivalent vehicle failure?
 
-> **SIMULATED OPERATIONS • GOOGLE MAPS CONTEXT**
-> This is a decision-support digital twin, not a real transport control system. Fleet, passenger, incident, accessibility, energy, and recovery data are authored and deterministic.
+The product is not a fleet-management dashboard, operational dispatcher, live
+digital twin, or scientifically calibrated transport model. It is a synthetic
+decision-support experiment workbench whose evidence is reproducible and whose
+final finding remains human-reviewed.
 
-## Golden workflow
+## Migration status
+
+This branch currently contains the approved **Gate 1 documentation contract**.
+The Stress Lab simulator, route, UI, six tools, and tests are not implemented
+yet. Until later gates pass, the existing application runtime remains the
+superseded Recovery Command Center baseline and must not be presented as Stress
+Lab evidence.
+
+Gate 2 will first prove a two-tool static WebMCP spike in the real target browser
+before the deterministic engine is built.
+
+## The problem
+
+Mobility design discussions often rely on dashboards, opaque assumptions, or
+agent prose that cannot be reproduced. MAAV Stress Lab instead makes the
+experiment itself the product:
 
 ```text
-Human activates incident
-  → agent inspects
-  → agent evaluates
-  → agent stages
-  → human approves in the visible UI
-  → agent commits
-  → RECOVERED
-  → agent audits or rolls back
+controlled scenario revisions
+  -> immutable simulation runs
+  -> compatible comparison evidence
+  -> evidence-linked finding
+  -> visible human review
 ```
 
-The durable domain phases are:
+The agent can operate the lab, but it cannot create evidence, Accept its own
+finding, dispatch a vehicle, or turn a synthetic result into a real-world
+action.
 
-```text
-READY → INCIDENT_ACTIVE → OPTIONS_EVALUATED → PLAN_STAGED
-      → APPROVED → RECOVERED → ROLLED_BACK
-```
+## H0 golden experiment
 
-Every successful domain mutation validates `expectedRevision` and increments revision exactly once. Approval is one-time, plan-bound, and valid only for the resulting `APPROVED` revision.
+The submission scope is one bounded experiment:
 
-## WebMCP tools
-
-| Tool | Availability |
+| Field | H0 value |
 |---|---|
-| `get_network_snapshot` | All phases; read-only |
-| `evaluate_recovery_options` | `INCIDENT_ACTIVE` |
-| `stage_recovery_plan` | `OPTIONS_EVALUATED` |
-| `commit_approved_recovery` | `APPROVED` after visible human approval |
-| `rollback_last_recovery` | `RECOVERED` |
-| `get_action_audit_log` | All phases; read-only |
+| Network | Versioned synthetic Sandton–Rosebank corridor |
+| Demand | 120 synthetic passenger requests |
+| Window | 08:30–09:00 |
+| Tick | 30 simulated seconds |
+| Seed | `07` |
+| Scenario A | 12 vehicles × 8 seats |
+| Scenario B | 10 vehicles × 10 seats |
+| Maximum wait | 3 minutes |
+| Minimum battery reserve | 20% |
+| Stress event | Equivalent vehicle failure at 08:42 |
 
-Incident activation, reset, and approval are intentionally human-only UI controls. There is no generic mutation tool.
+Each scenario independently fails its active vehicle with the highest onboard
+occupancy. Ties use reserved-passenger count, active-service state, then
+ascending vehicle ID. The rule is fixed before execution; the vehicle is not
+randomly or theatrically selected.
 
-## Architecture
+The planned engine derives service, capacity, wait, distance, energy, battery,
+constraint, and recovery outcomes from an immutable event ledger. No final KPI
+or preferred scenario is prewritten. Golden KPI values will be published only
+after the engine exists and reproducibility gates pass.
 
-```text
-React UI / WebMCP / Google adapters
-                 ↓
-        application use cases
-                 ↓
-        deterministic domain core
-```
+## Why this is not another fleet dashboard
 
-- Modular monolith with hexagonal boundaries.
-- UI and WebMCP invoke the same `CommandCenterService` use cases.
-- Domain and application layers do not import React, Next.js, browser APIs, Google, WebMCP, or Zustand.
-- Zustand implements the in-memory repository adapter and separate ephemeral UI state.
-- The central WebMCP registry tracks in-flight executions and drains before aborting a registration.
-- Rollback snapshots only network, fleet, demand, simulated time, incident, and metrics; audit and governance are never rewound.
+A dashboard primarily reports current operations. Stress Lab creates and tests
+counterfactual evidence:
 
-## Google context and fallback
+- immutable A/B scenario revisions;
+- one shared deterministic passenger trace;
+- equivalent stress treatment;
+- replayable event-ledger runs;
+- compatibility checks before comparison;
+- hard constraints shown separately from trade-offs;
+- findings whose numeric claims come only from immutable evidence;
+- visible human Accept or Challenge.
 
-With both services configured, the UI uses Google Maps JavaScript API and `AdvancedMarkerElement`, while a narrow server route requests traffic-aware duration, static duration, distance, and encoded geometry for the fixed Rosebank-Sandton segment. The real road-shaped segment is shown prominently above the subdued authored North Spine.
+It performs no live dispatch and uses no real passenger or fleet feed.
 
-The North Spine, fleet, passengers, incident, and operational status remain authored simulated truth. Google route data is an ephemeral session snapshot—not a continuous traffic feed—and is never persisted or used for hard constraints, scoring, plan ranking, approval, audit, or rollback. Without keys—or when Routes is unavailable—the app uses a clearly labelled authored map and route fallback. The entire golden workflow remains functional and selects the same winning plan.
+## WebMCP role
 
-Use an uncommitted `.env.local` to enable Google enrichment:
+The H0 public catalog is exactly:
 
-```bash
-NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
-NEXT_PUBLIC_GOOGLE_MAP_ID=
-GOOGLE_ROUTES_API_KEY=
-```
+1. `read_lab_state`
+2. `configure_scenario`
+3. `run_scenario`
+4. `inject_disruption`
+5. `compare_scenarios`
+6. `stage_finding`
 
-Use separate restricted keys:
+All six will be registered once and remain discoverable. Application
+preconditions—not disappearing tools—will enforce ordering, expected revision,
+idempotency, compatibility, staleness, and cancellation.
 
-- `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`: Maps JavaScript API, HTTP-referrer restricted.
-- `NEXT_PUBLIC_GOOGLE_MAP_ID`: optional Google map ID; the UI otherwise uses `DEMO_MAP_ID`.
-- `GOOGLE_ROUTES_API_KEY`: Routes API only, API-restricted, server-side.
+Manual controls and WebMCP tools call the same application service. The browser
+agent may configure, run, disrupt, compare, and stage. **Accept finding**,
+**Challenge finding**, and deterministic Reset remain visible human UI commands
+and are intentionally absent from WebMCP.
 
-Never commit populated environment files.
+## Google Maps role
+
+Google Maps is presentation context only. It may provide the basemap, Advanced
+Markers, authored network overlays, supported GeoJSON/polygon/line layers,
+selection, and geographic orientation.
+
+The versioned authored fixture—not Google—owns simulation distance, travel time,
+dispatch, energy, battery, constraints, metric deltas, and finding evidence.
+When Google is unavailable, the same immutable replay is shown through an
+authored SVG and structured network-list fallback. Results and fingerprints are
+unchanged.
+
+## H0 submission scope
+
+The approved H0 target contains:
+
+- one fixed synthetic corridor and shared seed-07 demand trace;
+- two scenario slots;
+- one deterministic 30-second simulation model;
+- one equivalent vehicle-failure type;
+- one transparent dispatch and recovery policy;
+- immutable runs, comparisons, findings, and evidence fingerprints;
+- exact six static WebMCP tools;
+- evidence-linked pending finding and human review;
+- Google projection plus authored fallback;
+- manual, keyboard, reduced-motion, and unsupported-WebMCP paths.
+
+Not included in H0: arbitrary city creation, live feeds, GTFS import, external
+optimizers, provider adapters, demand surge, charging outage, charging
+simulation, authentication, database persistence, team workspaces,
+multi-tenancy, exports, embedded chat, SUMO, reinforcement learning, V2X,
+operational dispatch, or real passenger data.
 
 ## Local development
 
@@ -87,14 +143,15 @@ Requirements:
 
 - Node.js 20+
 - pnpm 8.11.0
-- Google Chrome 150 with WebMCP testing enabled for real-tool smoke testing
+- Google Chrome 150 with WebMCP testing enabled for real-browser gates
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Open exactly `http://localhost:3000`. The app remains fully demonstrable with manual fallback controls when WebMCP or Google APIs are unavailable.
+The current baseline opens at `http://localhost:3000`. A later approved gate
+will add Stress Lab at `/lab`; do not infer that route exists during Gate 1.
 
 ## Verification
 
@@ -107,32 +164,22 @@ pnpm test
 pnpm build
 ```
 
-Full Playwright E2E is configured for Linux CI and does not require downloading the newest Playwright browser for ordinary local development:
+Full Playwright E2E may run in Linux CI. The newest locally downloaded
+Playwright browser is not a blocking macOS development requirement. Every
+implemented WebMCP slice must also pass the documented real Chrome 150 smoke
+gate.
 
-```bash
-pnpm test:e2e
-```
+## Documentation
 
-The test suite covers deterministic replay, hard-constraint filtering/ranking, legal transitions, stale revisions, approval binding and invalidation, operational-only rollback, strict tool schemas, exact phase registration, drain-aware removal, Routes fallback, and the golden UI flow.
-
-## Chrome 150 smoke flow
-
-1. Open the app as the top-level same-origin page and confirm the WebMCP status reads available.
-2. Activate the incident in the UI.
-3. Invoke `get_network_snapshot`, `evaluate_recovery_options`, and `stage_recovery_plan` through Chrome WebMCP.
-4. Confirm `commit_approved_recovery` is absent before approval.
-5. Approve the staged plan in the visible UI; confirm commit becomes available.
-6. Commit through WebMCP and verify revision 5, `RECOVERED`, and 96.8% on-time arrivals.
-7. Read the audit and roll back; verify revision 6, `ROLLED_BACK`, restored operational metrics, and preserved audit history.
-
-## Contract documents
-
-- [`AGENTS.md`](./AGENTS.md)
-- [`docs/PRODUCT.md`](./docs/PRODUCT.md)
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
-- [`docs/WEBMCP_TOOLS.md`](./docs/WEBMCP_TOOLS.md)
-- [`docs/DEMO.md`](./docs/DEMO.md)
+- [Product behavior and scope](./docs/PRODUCT.md)
+- [Architecture and state flow](./docs/ARCHITECTURE.md)
+- [Simulation contract](./docs/SIMULATION_ENGINE.md)
+- [WebMCP contracts](./docs/WEBMCP_TOOLS.md)
+- [Golden demonstration](./docs/DEMO.md)
+- [Challenge delivery plan](./docs/CHALLENGE_PLAN.md)
+- [Durable agent guardrails](./AGENTS.md)
+- [Approved planning sources](./docs/plans/stress-lab/)
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT — see [LICENSE](./LICENSE).

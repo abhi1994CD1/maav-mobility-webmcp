@@ -1,450 +1,558 @@
-# WebMCP Tool Contracts
+# MAAV Stress Lab WebMCP Contracts
 
-## Target and public surface
+## Status and target
 
-These contracts target the WebMCP API available in Google Chrome 150.
+This document owns the future Stress Lab public WebMCP contract. Gate 1 changes
+documentation only; the current runtime tools remain superseded baseline
+behavior until Gate 2 and later implementation gates replace them.
 
-- Use `document.modelContext`, never `navigator.modelContext`.
-- Use the official `webmcp-types` package for TypeScript declarations.
-- Register tools with the imperative API through one adapter and central drain-aware registry.
-- Validate every input again at runtime with Zod before calling an application use case.
-- Propagate `execute(input, { signal })` cancellation into cancellable asynchronous work.
-- Do not add `outputSchema`; it is not part of the targeted contract.
-- Treat the application/domain result as authoritative. Ephemeral UI effects are best-effort and may not turn a committed mutation into a reported failure.
-- Use stable codes and bounded authored labels. Do not reflect arbitrary caller-controlled identifiers in otherwise trusted tool output.
+Target Google Chrome 150:
 
-The complete public tool surface is:
+- use the imperative `document.modelContext` API, never
+  `navigator.modelContext`;
+- use official `webmcp-types` TypeScript declarations;
+- define `name`, `title`, concise `description`, JSON `inputSchema`,
+  `annotations`, and `execute(input, { signal })`;
+- validate unknown input again with strict Zod schemas;
+- propagate the invocation `AbortSignal`;
+- do not invent `outputSchema`.
 
-1. `get_network_snapshot`
-2. `evaluate_recovery_options`
-3. `stage_recovery_plan`
-4. `commit_approved_recovery`
-5. `rollback_last_recovery`
-6. `get_action_audit_log`
+## Exact static catalog
 
-`activate_demo_incident` is not a WebMCP tool. Activating and resetting the canonical incident are explicit human/demo UI controls. The browser agent's recovery responsibility begins after an incident exists.
+Register exactly these six tools once after the canonical lab store is ready:
 
-Every definition includes `name`, `title`, a concise `description`, serializable JSON `inputSchema`, `annotations`, and `execute(input, { signal })`. Every tool calls one application use case and returns a compact serializable envelope.
+1. `read_lab_state`
+2. `configure_scenario`
+3. `run_scenario`
+4. `inject_disruption`
+5. `compare_scenarios`
+6. `stage_finding`
 
-## Common result envelope
+All six remain discoverable throughout the application lifecycle. The UI may
+show each as Ready or Blocked, but the catalog does not change with state.
+Application-level prerequisites, revisions, compatibility, and stale-evidence
+checks remain authoritative even when an agent invokes a tool prematurely.
 
-Success:
+There is no public tool for human review, deterministic Reset, evidence
+deletion, real-world execution, dispatch, arbitrary state mutation, or asking a
+question.
+
+## Adapter contract
+
+Every adapter remains thin:
+
+```text
+strictly validate unknown input
+  -> attach trusted WEBMCP actor/source context
+  -> call the shared application service
+  -> return a compact serializable envelope
+  -> expose best-effort visible activity
+```
+
+An adapter must not calculate KPIs, modify Zustand directly, call Google to
+determine results, select or Accept a finding, invent evidence, reflect raw
+prompts, or perform a real-world action.
+
+## Shared conventions
+
+### Revisions
+
+Every mutating tool requires `expectedRevision`. A successful mutation
+increments the workspace revision exactly once. A stale request returns
+`REVISION_CONFLICT`, the current revision, and `read_lab_state` as its safe
+next action without mutation.
+
+### Operation IDs and idempotency
+
+Every mutating tool requires a bounded opaque `operationId`.
+
+- same ID + same tool + same canonical arguments returns the original terminal
+  result with `status: "REUSED"`;
+- same ID with a different tool or arguments returns
+  `IDEMPOTENCY_CONFLICT`;
+- no retry may create duplicate scenario revisions, runs, disruptions,
+  comparisons, or findings;
+- a corrected or cancelled operation is retried with a new operation ID.
+
+### Common success envelope
 
 ```json
 {
   "ok": true,
-  "data": {},
-  "meta": {
-    "revision": 1,
-    "phase": "INCIDENT_ACTIVE"
-  }
+  "operationId": "op-run-a-001",
+  "stateRevision": 18,
+  "status": "COMPLETED",
+  "artifactId": "run-A-014",
+  "summary": {},
+  "nextActions": ["compare_scenarios"]
 }
 ```
 
-Failure:
+`operationId` and `artifactId` are omitted when they do not apply to the
+read-only query. `summary` is bounded and never contains the full event
+ledger. The UI provides detailed evidence inspection by artifact ID.
+
+### Common business-error envelope
 
 ```json
 {
   "ok": false,
+  "operationId": "op-run-a-001",
+  "stateRevision": 18,
   "error": {
-    "code": "STALE_REVISION",
-    "message": "The network changed after the agent inspected it.",
-    "recoverable": true,
-    "suggestedAction": "Call get_network_snapshot and retry with the current revision."
-  },
-  "meta": {
-    "revision": 1,
-    "phase": "INCIDENT_ACTIVE"
+    "code": "REVISION_CONFLICT",
+    "message": "The experiment changed after it was inspected.",
+    "retryable": true,
+    "field": "expectedRevision",
+    "currentRevision": 18,
+    "nextAction": "read_lab_state"
   }
 }
 ```
 
-For a successful mutation, `meta` contains the resulting revision and phase. For a query or failure, it contains the unchanged current revision and phase. Failures never expose stack traces, keys, approval secrets, arbitrary reflected caller text, or partially mutated state.
+Optional `field`, `currentRevision`, `missingFields`, and
+`decisionPoints` appear only when useful. Errors never contain stack traces,
+keys, browser storage, raw prompts, arbitrary reflected identifiers, or partial
+success disguised as failure.
 
-Stable error codes include `INVALID_INPUT`, `STALE_REVISION`, `INVALID_PHASE`, `PLAN_NOT_FOUND`, `PLAN_NOT_COMPLIANT`, `APPROVAL_REQUIRED`, `APPROVAL_MISMATCH`, `APPROVAL_CONSUMED`, `NO_ROLLBACK_AVAILABLE`, `ABORTED`, and `INTERNAL_ERROR`. Messages and suggested actions must be actionable without revealing internals.
+Stable H0 error codes include:
 
-## 1. `get_network_snapshot`
+```text
+INVALID_ARGUMENTS
+NEEDS_CLARIFICATION
+INVALID_CONFIGURATION
+PREREQUISITE_NOT_MET
+REVISION_CONFLICT
+IDEMPOTENCY_CONFLICT
+SCENARIO_REVISION_NOT_FOUND
+RUN_NOT_FOUND
+RUN_NOT_COMPLETED
+STALE_RUN
+INCOMPARABLE_RUNS
+OUTSIDE_HORIZON
+DISRUPTION_TARGET_NOT_FOUND
+OPERATION_CANCELLED
+ENGINE_INVARIANT_FAILED
+INTERNAL_ERROR
+```
 
-Title: `Get network snapshot`
+## Strict shared configuration shape
 
-Description: `Inspect simulated operations, the active incident, KPIs, constraints, and legal next actions.`
+The public scenario boundary normalizes a complete replacement or bounded patch
+into this H0 configuration:
 
-Read-only. It must not increment revision.
+```ts
+type ScenarioConfiguration = {
+  label: string; // 1–48 plain-text characters
+  fleet: {
+    vehicleCount: number;           // integer 0–30
+    seatsPerVehicle: number;        // integer 1–20
+    batteryCapacityKWh: number;     // bounded positive fixture-supported value
+    startingBatteryPercent: number; // 0–100
+    minimumReservePercent: number;  // 0–100 and <= starting battery
+    energyKWhPerKm: number;         // bounded positive authored assumption
+    dwellSeconds: number;           // non-negative multiple of 30
+    initialZoneWeights: Record<string, number>;
+  };
+  constraints: {
+    maximumWaitSeconds: number;
+    maximumUnservedPassengers: number;
+    minimumBatteryReservePercent: number;
+    maximumRecoverySeconds: number;
+    standingAllowed: false;
+  };
+  objectives: Array<
+    | "LOWER_WAIT"
+    | "LOWER_ENERGY_PER_PASSENGER_KM"
+    | "HIGHER_UTILIZATION"
+    | "FASTER_RECOVERY"
+    | "LOWER_EMPTY_KM"
+  >;
+};
+```
 
-Input schema:
+The schema rejects unknown fields, non-finite values, arbitrary URLs, HTML,
+JavaScript, expressions, raw prompts, and caller-supplied KPI claims.
 
-```json
+## 1. `read_lab_state`
+
+Purpose: inspect the current experiment revision, scenario/run summaries,
+constraints, disruptions, stale/current status, readiness, and valid or blocked
+next actions.
+
+Input:
+
+```ts
 {
-  "type": "object",
-  "properties": {
-    "focus": {
-      "type": "string",
-      "description": "Area to summarize and focus in the visible command center.",
-      "enum": ["network", "incident", "fleet", "demand", "accessibility", "all"]
-    }
-  },
-  "required": ["focus"],
-  "additionalProperties": false
+  scope?: "SUMMARY" | "SCENARIO" | "RUN" | "COMPARISON" | "FINDING";
+  objectId?: string;
 }
 ```
 
-Success `data` includes compact `scenarioId`, requested summary, constraints, route-context source (`GOOGLE` or `AUTHORED_FALLBACK`), legal next actions, and non-secret recovery context:
+Prerequisites: the canonical lab store is loaded. It succeeds regardless of
+which later artifacts exist.
 
-```json
-{
-  "nextActor": "HUMAN",
-  "nextAction": "APPROVE_STAGED_PLAN",
-  "recommendedPlanId": "combined_recovery_c",
-  "stagedPlanId": "combined_recovery_c",
-  "approvedPlanId": null,
-  "rollbackAvailable": false
-}
-```
+Authoritative output:
 
-Optional plan IDs are omitted or `null` when not applicable. This context lets an agent recover after interruption or a stale revision without exposing the approval record. The snapshot does not return a large state dump or raw Google free-form text.
+- current workspace revision;
+- engine, network, metric, demand, horizon, and seed identity;
+- active A/B scenario revision IDs;
+- compact current/historical run, comparison, and finding status;
+- active disruption specifications;
+- hard constraints;
+- map and WebMCP readiness;
+- blocked and valid next actions;
+- explicit synthetic-data disclosure.
+
+It does not return the full ledger, internal state, keys, raw Google context, or
+raw activity prompts.
+
+Visible effect: highlight/focus the requested artifact through ephemeral UI
+state. No workspace revision change.
 
 Annotations:
 
 ```json
+{ "readOnlyHint": true, "untrustedContentHint": true }
+```
+
+`untrustedContentHint` is true because compact state may contain bounded
+human-authored scenario labels.
+
+## 2. `configure_scenario`
+
+Purpose: create an immutable Scenario A or B revision from a complete
+configuration or documented bounded patch.
+
+Input:
+
+```ts
 {
-  "readOnlyHint": true,
-  "untrustedContentHint": false
+  operationId: string;
+  expectedRevision: number;
+  slot: "A" | "B";
+  mode: "REPLACE" | "PATCH";
+  configuration: ScenarioConfiguration | BoundedScenarioPatch;
 }
 ```
 
-Visible effect: ephemeral map focus and the relevant side panel update; revision does not change.
+Prerequisites:
 
-## 2. `evaluate_recovery_options`
+- expected workspace revision is current;
+- target slot has no conflicting active mutation;
+- patch fields are documented and the normalized complete configuration is
+  valid.
 
-Title: `Evaluate recovery options`
+Authoritative output:
 
-Description: `Calculate and compare deterministic recovery plans against operator objectives.`
+- immutable scenario revision ID and input fingerprint;
+- normalized assumptions and constraints;
+- validation warnings;
+- difference summary against the prior revision;
+- invalidated dependent artifact IDs;
+- current valid next actions.
 
-Analytical domain mutation from `INCIDENT_ACTIVE` to `OPTIONS_EVALUATED`.
-
-Input schema:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "expectedRevision": {
-      "type": "integer",
-      "description": "Current domain revision returned by get_network_snapshot or the preceding successful mutation.",
-      "minimum": 0
-    },
-    "objectives": {
-      "type": "object",
-      "properties": {
-        "minimumOnTimePercent": {
-          "type": "number",
-          "description": "Hard minimum projected on-time passenger percentage.",
-          "minimum": 0,
-          "maximum": 100
-        },
-        "maximumWaitMinutes": {
-          "type": "number",
-          "description": "Hard maximum projected passenger wait in minutes.",
-          "exclusiveMinimum": 0
-        },
-        "preserveAccessibility": {
-          "type": "boolean",
-          "description": "When true, any projected accessibility violation makes a plan non-compliant."
-        },
-        "maximumEnergyIncreasePercent": {
-          "type": "number",
-          "description": "Hard maximum additional recovery energy relative to the authored baseline.",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "minimumOnTimePercent",
-        "maximumWaitMinutes",
-        "preserveAccessibility",
-        "maximumEnergyIncreasePercent"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "required": ["expectedRevision", "objectives"],
-  "additionalProperties": false
-}
-```
-
-Success `data` includes `engineVersion`, `baseRevision`, projection horizon, compact plan IDs, calculated metrics and deltas, normalized score components, hard-constraint pass/fail, bounded explanation codes, and `recommendedPlanId` when at least one plan is compliant. The counterfactual model calculates every value from the current operational snapshot and action-only candidates; the agent does not. Internal cohorts, assignments, and operational projections are never returned.
-
-```json
-{
-  "engineVersion": "corridor-flow-v1",
-  "baseRevision": 1,
-  "horizonMinutes": 30,
-  "modelSource": "AUTHORED_SIMULATION",
-  "recommendedPlanId": "combined_recovery_c",
-  "plans": []
-}
-```
-
-If no plan satisfies all hard constraints, `recommendedPlanId` is omitted and the tool still returns the evaluated failures. It never invents a recommendation.
+Visible effect: populate the selected scenario, render validation/differences,
+and refresh authored map projections. No simulation result is implied.
 
 Annotations:
 
 ```json
+{ "readOnlyHint": false, "untrustedContentHint": true }
+```
+
+The normalized result may contain the bounded human-authored scenario label.
+
+## 3. `run_scenario`
+
+Purpose: execute one immutable scenario revision through the deterministic
+30-second engine and commit one terminal run artifact.
+
+Input:
+
+```ts
 {
-  "readOnlyHint": false,
-  "untrustedContentHint": false
+  operationId: string;
+  expectedRevision: number;
+  scenarioRevisionId: string;
 }
 ```
 
-Visible effect: the plan comparison opens and alternatives render on the map. The successful canonical call at expected revision 1 returns revision 2 and phase `OPTIONS_EVALUATED`.
+Prerequisites:
 
-## 3. `stage_recovery_plan`
+- current expected revision;
+- referenced scenario revision exists and is valid;
+- no conflicting active run for the target slot;
+- immutable engine, network, shared demand, horizon, seed, and disruption inputs
+  can be captured.
 
-Title: `Stage recovery plan`
+Authoritative output:
 
-Description: `Stage one evaluated recovery plan for visible human review without applying it.`
+- run ID and terminal status;
+- engine/network/input/result fingerprints;
+- compact service, capacity, wait, distance, energy, battery, recovery, and
+  hard-constraint summary;
+- event/snapshot counts and evidence IDs;
+- valid next actions.
 
-Reversible governance mutation from `OPTIONS_EVALUATED` to `PLAN_STAGED`. It does not change operational fleet, demand, or KPI truth.
+The tool does not wait for visual playback. Playback projects stored evidence.
 
-Input schema:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "planId": {
-      "type": "string",
-      "description": "ID of a compliant plan returned by the current evaluate_recovery_options result.",
-      "minLength": 1,
-      "maxLength": 128
-    },
-    "expectedRevision": {
-      "type": "integer",
-      "description": "Resulting revision from the successful evaluate_recovery_options call.",
-      "minimum": 0
-    }
-  },
-  "required": ["planId", "expectedRevision"],
-  "additionalProperties": false
-}
-```
-
-Success `data` includes `planId`, calculated impact summary, and `approvalRequired: true`.
-
-An unknown plan ID returns `PLAN_NOT_FOUND` without reflecting the caller-supplied value in the trusted error message.
+Visible effect: show genuine pending/running/cancelled/completed activity, then
+commit metrics and timeline only after successful artifact commit.
 
 Annotations:
 
 ```json
+{ "readOnlyHint": false, "untrustedContentHint": false }
+```
+
+Cancellation: propagate `execute(input, { signal })` through the service and
+tick loop. Cancellation produces no completed KPI set or later ghost commit.
+
+## 4. `inject_disruption`
+
+Purpose: create a new scenario revision with one synthetic H0 vehicle failure.
+
+Input:
+
+```ts
 {
-  "readOnlyHint": false,
-  "untrustedContentHint": false
+  operationId: string;
+  expectedRevision: number;
+  scenarioRevisionId: string;
+  disruption: {
+    type: "VEHICLE_FAILURE";
+    target:
+      | { kind: "VEHICLE_ID"; vehicleId: string }
+      | {
+          kind: "DETERMINISTIC_RULE";
+          rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID";
+        };
+    atSecond: number;
+  };
 }
 ```
 
-Visible effect: a translucent preview and approval drawer appear. For the canonical sequence, `stage_recovery_plan(expectedRevision=2)` returns revision 3 and phase `PLAN_STAGED`.
+For the golden experiment, `atSecond: 720` means 08:42 and the deterministic
+rule additionally applies the documented reserved-passenger and active-service
+tie-breaks before ascending vehicle ID.
 
-## Human-only approval use case
+Prerequisites:
 
-Approval is intentionally not a WebMCP tool. The operator approves the visible staged plan through the UI using the same application layer.
+- current expected revision;
+- referenced scenario revision exists;
+- disruption time is inside the immutable horizon;
+- target or rule is valid;
+- the command does not rewrite an active or completed run.
 
-For the canonical sequence, approval at `expectedRevision=3` produces revision 4 and phase `APPROVED`, with:
+Authoritative output:
 
-```json
-{
-  "planId": "combined_recovery_c",
-  "validForRevision": 4,
-  "consumed": false
-}
-```
+- new immutable scenario revision and disruption IDs;
+- disruption fingerprint and normalized meaning;
+- invalidated/currentness effects;
+- validation result and valid next actions.
 
-Only after this succeeds may the registry expose `commit_approved_recovery`.
+Call once for Scenario A and once for Scenario B to apply the equivalent stress
+treatment. The service records the vehicle resolved independently during each
+run.
 
-## 4. `commit_approved_recovery`
-
-Title: `Commit approved recovery`
-
-Description: `Apply the exact recovery plan explicitly approved in the visible UI.`
-
-Consequential mutation from `APPROVED` directly to `RECOVERED`. Execution and animation are transient UI/tool activity, not a durable phase.
-
-Input schema:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "planId": {
-      "type": "string",
-      "description": "Exact approved plan ID returned by the staged plan and visible approval state.",
-      "minLength": 1,
-      "maxLength": 128
-    },
-    "expectedRevision": {
-      "type": "integer",
-      "description": "Resulting APPROVED-state revision returned after visible human approval.",
-      "minimum": 0
-    }
-  },
-  "required": ["planId", "expectedRevision"],
-  "additionalProperties": false
-}
-```
-
-Atomic preconditions:
-
-- current revision equals `expectedRevision`;
-- phase is `APPROVED`;
-- approval exists;
-- approval `validForRevision` equals current revision;
-- approval and staged-plan IDs both match input `planId`;
-- approval `consumed` is `false`.
-
-A valid commit first captures an operational-only snapshot, then applies the plan, consumes approval, appends events/audit, and increments revision once. Any intervening mutation invalidates approval. These checks run even if delayed registry removal leaves the tool temporarily discoverable.
-
-Success `data` includes `planId`, post-recovery metrics, and the committed audit sequence. It does not expose the approval record as an authorization secret.
+Visible effect: add the authored incident specification and mark dependent
+current evidence stale. The timeline/map event becomes evidence only after a
+run emits it.
 
 Annotations:
 
 ```json
+{ "readOnlyHint": false, "untrustedContentHint": false }
+```
+
+## 5. `compare_scenarios`
+
+Purpose: compare exactly two explicit current completed run artifacts after a
+strict compatibility check.
+
+Input:
+
+```ts
 {
-  "readOnlyHint": false,
-  "untrustedContentHint": false
+  operationId: string;
+  expectedRevision: number;
+  runAId: string;
+  runBId: string;
 }
 ```
 
-Visible effect: operational overlays and KPIs change to recovered values while the UI animates the transition. For the canonical sequence, expected revision 4 returns revision 5 and phase `RECOVERED`.
+Prerequisites:
 
-## 5. `rollback_last_recovery`
+- current expected revision;
+- run A belongs to slot A and run B to slot B;
+- both completed and are current;
+- equal engine, network, demand fingerprint, seed, horizon, tick, metric
+  version, and equivalent disruption policy.
 
-Title: `Roll back last recovery`
+Authoritative output:
 
-Description: `Restore the operational state from immediately before the last committed recovery.`
+- comparison ID, compatibility class, evidence hash, and configuration
+  differences;
+- hard-constraint matrix;
+- service, capacity, wait, distance, energy, battery, and recovery A/B values
+  plus defined deltas;
+- caveats and valid next actions.
 
-Consequential, reversible mutation from `RECOVERED` to `ROLLED_BACK`.
+An incompatible pair returns `INCOMPARABLE_RUNS`. It may be inspected in the
+UI, but the tool creates no authoritative deltas, winner, or finding-ready
+artifact. No opaque composite score is produced.
 
-Input schema:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "reason": {
-      "type": "string",
-      "description": "Short operator or agent reason retained as untrusted audit content.",
-      "minLength": 1,
-      "maxLength": 240
-    },
-    "expectedRevision": {
-      "type": "integer",
-      "description": "Current RECOVERED-state revision returned by the successful commit or a fresh snapshot.",
-      "minimum": 0
-    }
-  },
-  "required": ["reason", "expectedRevision"],
-  "additionalProperties": false
-}
-```
-
-Rollback restores only the `OperationalSnapshot`: network, separated fleet/demand state, simulated time, active incident, and operational metrics. It never restores phase, revision, approval, staged/evaluated governance, audit, or activity state. It clears approval/staged governance and the consumed snapshot, appends rollback events/audit, increments revision once, and enters `ROLLED_BACK`.
-
-Success `data` includes restored metric summary and audit sequence. The submitted reason is validated and safely rendered; it becomes untrusted audit content rather than executable markup.
+Visible effect: open synchronized comparison mode across metrics, evidence,
+timeline, and map/fallback context.
 
 Annotations:
 
 ```json
+{ "readOnlyHint": false, "untrustedContentHint": true }
+```
+
+The configuration-difference summary may include bounded human-authored labels.
+
+## 6. `stage_finding`
+
+Purpose: stage a bounded evidence-backed interpretation from one current
+comparison for human review.
+
+Input:
+
+```ts
 {
-  "readOnlyHint": false,
-  "untrustedContentHint": false
+  operationId: string;
+  expectedRevision: number;
+  comparisonId: string;
+  selectedOutcome: "A" | "B" | "TRADE_OFF" | "INCONCLUSIVE";
+  emphasis: "BALANCED" | "SERVICE" | "ENERGY" | "RESILIENCE";
 }
 ```
 
-Visible effect: map and KPIs return to pre-commit operational values while the append-only audit remains. For the canonical sequence, expected revision 5 returns revision 6 and phase `ROLLED_BACK`.
+Prerequisites:
 
-## 6. `get_action_audit_log`
+- current expected revision;
+- comparison exists, is compatible, and is current;
+- selected outcome and emphasis are supported;
+- no caller-supplied metric number or unsupported claim is accepted.
 
-Title: `Get action audit log`
+Authoritative output:
 
-Description: `Read bounded action, actor, revision, and outcome records from the append-only audit.`
+- pending-review finding ID;
+- comparison and evidence hashes;
+- at most three engine-generated claims with metric keys, values, evidence IDs,
+  hard-constraint context, and caveats;
+- synthetic-simulation disclosure;
+- human review as the next action.
 
-Read-only. It must not increment revision.
-
-Input schema:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "afterSequence": {
-      "type": "integer",
-      "description": "Return audit items with sequence numbers greater than this cursor.",
-      "minimum": 0
-    },
-    "limit": {
-      "type": "integer",
-      "description": "Maximum number of bounded audit items to return.",
-      "minimum": 1,
-      "maximum": 100
-    }
-  },
-  "required": ["afterSequence", "limit"],
-  "additionalProperties": false
-}
-```
-
-Success `data` includes bounded audit items and `nextSequence`. Audit items use codes and structured fields. A validated operator-supplied rollback reason may be included because it is necessary audit evidence; raw third-party route text is not returned.
+Visible effect: open the finding review surface labelled
+`AGENT DRAFT • PENDING HUMAN REVIEW`.
 
 Annotations:
 
 ```json
+{ "readOnlyHint": false, "untrustedContentHint": false }
+```
+
+The tool cannot change the finding to Accepted or Challenged and cannot execute
+any operational action.
+
+## Clarification without a seventh tool
+
+When a semantically essential choice is missing, return
+`NEEDS_CLARIFICATION` instead of guessing:
+
+```json
 {
-  "readOnlyHint": true,
-  "untrustedContentHint": true
+  "ok": false,
+  "operationId": "op-disrupt-001",
+  "stateRevision": 12,
+  "error": {
+    "code": "NEEDS_CLARIFICATION",
+    "message": "The disruption scope is ambiguous.",
+    "retryable": true,
+    "missingFields": ["scenarioRevisionId"],
+    "decisionPoints": [
+      {
+        "field": "scenario",
+        "question": "Apply the equivalent failure to Scenario A, Scenario B, or both?",
+        "allowedValues": ["A", "B", "BOTH"],
+        "recommended": "BOTH"
+      }
+    ],
+    "nextAction": "ASK_HUMAN_THEN_RETRY"
+  }
 }
 ```
 
-Visible effect: the audit timeline focuses the returned range; revision does not change.
+The browser agent asks the human and retries with corrected arguments and a new
+operation ID. Decision points are bounded; the application never returns an
+open-ended instruction-execution channel.
 
-## Dynamic registration matrix
+## Static registration lifecycle
 
-Exact names are shown below. Registration state is an availability hint, not authorization; every executing use case revalidates current phase and revision.
+One bridge and central registry own all six registrations and their registration
+`AbortController` values. React Strict Mode, remount, and route changes must
+not duplicate registrations.
 
-| Phase | Registered tools |
-|---|---|
-| `READY` | `get_network_snapshot`, `get_action_audit_log` |
-| `INCIDENT_ACTIVE` | `get_network_snapshot`, `evaluate_recovery_options`, `get_action_audit_log` |
-| `OPTIONS_EVALUATED` | `get_network_snapshot`, `stage_recovery_plan`, `get_action_audit_log` |
-| `PLAN_STAGED` | `get_network_snapshot`, `get_action_audit_log` |
-| `APPROVED` | `get_network_snapshot`, `commit_approved_recovery`, `get_action_audit_log` |
-| `RECOVERED` | `get_network_snapshot`, `rollback_last_recovery`, `get_action_audit_log` |
-| `ROLLED_BACK` | `get_network_snapshot`, `get_action_audit_log` |
+- Register the catalog once after store initialization.
+- State mutations never reconcile a different tool set.
+- Unregister only during authoritative bridge teardown.
+- Track in-flight callbacks and do not abort a registration while its invocation
+  is running or its result is settling.
+- Application prerequisites protect every consequential call regardless of
+  registry timing.
+- The registration controller is distinct from the invocation cancellation
+  signal.
 
-There is no `activate_demo_incident`, approval, generic execution, or unrestricted state-update tool.
+## Stale, incompatible, and late evidence
 
-## Drain-aware lifecycle and cancellation
+- Editing a scenario creates a new revision and marks dependent current
+  artifacts stale; old artifacts remain immutable.
+- A stale run cannot create a current comparison.
+- An incompatible comparison cannot produce authoritative deltas or a finding.
+- A finding whose comparison is stale cannot be accepted as current evidence.
+- A late run result cannot overwrite newer current state. Final compare-and-swap
+  determines whether it commits, is retained as explicit history, or is
+  discarded safely.
 
-The bridge coordinator serializes and coalesces phase reconciliation so delayed registration promises always converge on the newest desired phase. The central registry owns one registration `AbortController` and in-flight counter per tool. Its execute wrapper increments before dispatch and decrements in `finally`. When a phase change makes a tool invalid, the registry marks it for removal. If executions are in flight, removal waits; when the count reaches zero, the registry waits through the post-settlement result-delivery grace before aborting the registration signal. It never aborts/removes and immediately re-registers the same name while an invocation is active.
+## Human review boundary
 
-Pending removal is cancelled if the capability becomes valid again before drain. Registry teardown does not release document ownership until in-flight calls and registrations settle, so a remount cannot create duplicate registrations. Contract tests delay and reorder registration promises and require the final registered set to match the latest phase exactly.
+The browser agent may inspect, configure, run, disrupt, compare, and stage. Only
+visible UI controls may Accept, Challenge, or deterministically Reset.
 
-Do not assume a later `unregisterTool` method or Chrome-153-or-later behavior. A delayed removal can leave a tool visible briefly, which is why phase, revision, and approval checks remain mandatory inside application use cases.
+This is an explicit prototype workflow boundary, not a cryptographic identity or
+authorization claim. Tool annotations are hints, never authorization.
 
-The `signal` received by `execute(input, { signal })` is separate from the registration controller. Pass it to actual cancellable route fetches and async work. Pure synchronous mutations check a pre-aborted signal before the atomic mutation; do not add fake delays merely to manufacture cancellable work. Cancellation before atomic mutation returns `ABORTED`; cancellation must not produce a partial mutation or false success.
+## Security and content handling
 
-## Domain-authoritative execution
+- Expose tools only from the secure origin-isolated top-level application
+  document permitted by the `tools` Permissions Policy.
+- Do not set `document.domain` or delegate cross-origin iframe access.
+- Bound all strings and render them as text.
+- Do not accept arbitrary URLs, HTML, JavaScript, expressions, prompts, or
+  claimed evidence values.
+- Log sanitized structured arguments and fingerprints, not the browser-agent
+  conversation.
+- Never return Google keys, raw Google prose, browser storage, stack traces, or
+  full event ledgers.
+- A hostile scenario label cannot alter authority, registration, tool order, or
+  evidence.
 
-Tool execution has two ordered parts:
+## Agent evaluation contract
 
-1. validate input and obtain the application/domain result;
-2. render best-effort ephemeral activity, panel focus, announcements, or animation.
+Release evidence must cover:
 
-Once the domain mutation commits, that success result must be returned even if an ephemeral effect fails. The adapter records rendering failure separately and never emits `INTERNAL_ERROR` for an already committed mutation. A thrown `AbortError` before commit maps to `ABORTED`; unexpected application failures map to `INTERNAL_ERROR` without stack details.
-
-## Browser and content security
-
-- WebMCP requires a secure origin-isolated/origin-keyed document and permission from the `tools` Permissions Policy.
-- Do not enable `document.domain`.
-- Top-level same-origin registration is sufficient; no cross-origin iframe exposure is required.
-- Handle missing API, `SecurityError`, and `NotAllowedError` without breaking the manual app.
-- Set `untrustedContentHint: true` only when the actual tool output includes untrusted external or user-supplied content.
-- Normalize Google context to bounded structured values. Do not return raw third-party free-form text unless required by the product contract.
-- Never expose API keys, approval secrets, stack traces, or generic mutation facilities.
+- exact six-tool discovery with no duplicates;
+- golden configure/disrupt/run/compare/stage completion;
+- valid arguments across direct prompts and paraphrases;
+- structured recovery from invalid input;
+- clarification for essential ambiguity;
+- revision and idempotency conflicts;
+- cancellation without ghost artifacts;
+- stale and incompatible evidence rejection;
+- 100% grounding of displayed numeric claims;
+- zero agent-created finding acceptances;
+- complete manual behavior when WebMCP is unavailable.

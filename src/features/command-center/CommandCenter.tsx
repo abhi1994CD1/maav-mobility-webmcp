@@ -43,7 +43,9 @@ export function CommandCenter() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadRouteContext(controller.signal).then(setRouteContext);
+    void loadRouteContext(controller.signal).then((routeContext) => {
+      if (!controller.signal.aborted) setRouteContext(routeContext);
+    });
     return () => controller.abort();
   }, []);
 
@@ -279,7 +281,7 @@ export function CommandCenter() {
           <MapCanvas
             operational={domain.operational}
             animationNonce={ui.animationNonce}
-            routeContextSource={ui.routeContext.source}
+            routeContext={ui.routeContext}
           />
           <div className="map-topline">
             <div>
@@ -294,13 +296,18 @@ export function CommandCenter() {
           </div>
           <div className="map-legend" aria-label="Map legend">
             <span>
-              <i className="legend-line active" /> Active corridor
+              <i
+                className={`legend-line ${ui.routeContext.source === "GOOGLE" ? "backbone" : "active"}`}
+              />
+              Simulated operational spine
             </span>
+            {ui.routeContext.source === "GOOGLE" ? (
+              <span>
+                <i className="legend-line google-route" /> Google route context
+              </span>
+            ) : null}
             <span>
               <i className="legend-vehicle" /> Synthetic fleet
-            </span>
-            <span>
-              <i className="legend-demand" /> Passenger demand
             </span>
           </div>
           {ui.notice ? (

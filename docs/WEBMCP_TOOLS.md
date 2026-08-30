@@ -10,6 +10,8 @@ These contracts target the WebMCP API available in Google Chrome 150.
 - Validate every input again at runtime with Zod before calling an application use case.
 - Propagate `execute(input, { signal })` cancellation into cancellable asynchronous work.
 - Do not add `outputSchema`; it is not part of the targeted contract.
+- Treat the application/domain result as authoritative. Ephemeral UI effects are best-effort and may not turn a committed mutation into a reported failure.
+- Use stable codes and bounded authored labels. Do not reflect arbitrary caller-controlled identifiers in otherwise trusted tool output.
 
 The complete public tool surface is:
 
@@ -57,9 +59,9 @@ Failure:
 }
 ```
 
-For a successful mutation, `meta` contains the resulting revision and phase. For a query or failure, it contains the unchanged current revision and phase. Failures never expose stack traces, keys, approval secrets, or partially mutated state.
+For a successful mutation, `meta` contains the resulting revision and phase. For a query or failure, it contains the unchanged current revision and phase. Failures never expose stack traces, keys, approval secrets, arbitrary reflected caller text, or partially mutated state.
 
-Stable error codes include `INVALID_INPUT`, `STALE_REVISION`, `INVALID_PHASE`, `PLAN_NOT_FOUND`, `APPROVAL_REQUIRED`, `APPROVAL_MISMATCH`, `APPROVAL_CONSUMED`, `NO_ROLLBACK_AVAILABLE`, `ABORTED`, and `INTERNAL_ERROR`. Messages and suggested actions must be actionable without revealing internals.
+Stable error codes include `INVALID_INPUT`, `STALE_REVISION`, `INVALID_PHASE`, `PLAN_NOT_FOUND`, `PLAN_NOT_COMPLIANT`, `APPROVAL_REQUIRED`, `APPROVAL_MISMATCH`, `APPROVAL_CONSUMED`, `NO_ROLLBACK_AVAILABLE`, `ABORTED`, and `INTERNAL_ERROR`. Messages and suggested actions must be actionable without revealing internals.
 
 ## 1. `get_network_snapshot`
 
@@ -77,6 +79,7 @@ Input schema:
   "properties": {
     "focus": {
       "type": "string",
+      "description": "Area to summarize and focus in the visible command center.",
       "enum": ["network", "incident", "fleet", "demand", "accessibility", "all"]
     }
   },
@@ -85,7 +88,20 @@ Input schema:
 }
 ```
 
-Success `data` includes compact `scenarioId`, requested summary, constraints, route-context source (`GOOGLE` or `AUTHORED_FALLBACK`), and legal next actions. It does not return a large state dump or raw Google free-form text.
+Success `data` includes compact `scenarioId`, requested summary, constraints, route-context source (`GOOGLE` or `AUTHORED_FALLBACK`), legal next actions, and non-secret recovery context:
+
+```json
+{
+  "nextActor": "HUMAN",
+  "nextAction": "APPROVE_STAGED_PLAN",
+  "recommendedPlanId": "combined_recovery_c",
+  "stagedPlanId": "combined_recovery_c",
+  "approvedPlanId": null,
+  "rollbackAvailable": false
+}
+```
+
+Optional plan IDs are omitted or `null` when not applicable. This context lets an agent recover after interruption or a stale revision without exposing the approval record. The snapshot does not return a large state dump or raw Google free-form text.
 
 Annotations:
 
@@ -114,6 +130,7 @@ Input schema:
   "properties": {
     "expectedRevision": {
       "type": "integer",
+      "description": "Current domain revision returned by get_network_snapshot or the preceding successful mutation.",
       "minimum": 0
     },
     "objectives": {
@@ -121,18 +138,22 @@ Input schema:
       "properties": {
         "minimumOnTimePercent": {
           "type": "number",
+          "description": "Hard minimum projected on-time passenger percentage.",
           "minimum": 0,
           "maximum": 100
         },
         "maximumWaitMinutes": {
           "type": "number",
+          "description": "Hard maximum projected passenger wait in minutes.",
           "exclusiveMinimum": 0
         },
         "preserveAccessibility": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "When true, any projected accessibility violation makes a plan non-compliant."
         },
         "maximumEnergyIncreasePercent": {
           "type": "number",
+          "description": "Hard maximum additional recovery energy relative to the authored baseline.",
           "minimum": 0
         }
       },
@@ -150,7 +171,20 @@ Input schema:
 }
 ```
 
-Success `data` includes compact plan IDs, calculated metrics, hard-constraint pass/fail, explanation codes, and `recommendedPlanId`. The model calculates every value; the agent does not.
+Success `data` includes `engineVersion`, `baseRevision`, projection horizon, compact plan IDs, calculated metrics and deltas, normalized score components, hard-constraint pass/fail, bounded explanation codes, and `recommendedPlanId` when at least one plan is compliant. The counterfactual model calculates every value from the current operational snapshot and action-only candidates; the agent does not. Internal cohorts, assignments, and operational projections are never returned.
+
+```json
+{
+  "engineVersion": "corridor-flow-v1",
+  "baseRevision": 1,
+  "horizonMinutes": 30,
+  "modelSource": "AUTHORED_SIMULATION",
+  "recommendedPlanId": "combined_recovery_c",
+  "plans": []
+}
+```
+
+If no plan satisfies all hard constraints, `recommendedPlanId` is omitted and the tool still returns the evaluated failures. It never invents a recommendation.
 
 Annotations:
 
@@ -179,11 +213,13 @@ Input schema:
   "properties": {
     "planId": {
       "type": "string",
+      "description": "ID of a compliant plan returned by the current evaluate_recovery_options result.",
       "minLength": 1,
       "maxLength": 128
     },
     "expectedRevision": {
       "type": "integer",
+      "description": "Resulting revision from the successful evaluate_recovery_options call.",
       "minimum": 0
     }
   },
@@ -193,6 +229,8 @@ Input schema:
 ```
 
 Success `data` includes `planId`, calculated impact summary, and `approvalRequired: true`.
+
+An unknown plan ID returns `PLAN_NOT_FOUND` without reflecting the caller-supplied value in the trusted error message.
 
 Annotations:
 
@@ -237,11 +275,13 @@ Input schema:
   "properties": {
     "planId": {
       "type": "string",
+      "description": "Exact approved plan ID returned by the staged plan and visible approval state.",
       "minLength": 1,
       "maxLength": 128
     },
     "expectedRevision": {
       "type": "integer",
+      "description": "Resulting APPROVED-state revision returned after visible human approval.",
       "minimum": 0
     }
   },
@@ -290,11 +330,13 @@ Input schema:
   "properties": {
     "reason": {
       "type": "string",
+      "description": "Short operator or agent reason retained as untrusted audit content.",
       "minLength": 1,
       "maxLength": 240
     },
     "expectedRevision": {
       "type": "integer",
+      "description": "Current RECOVERED-state revision returned by the successful commit or a fresh snapshot.",
       "minimum": 0
     }
   },
@@ -334,10 +376,12 @@ Input schema:
   "properties": {
     "afterSequence": {
       "type": "integer",
+      "description": "Return audit items with sequence numbers greater than this cursor.",
       "minimum": 0
     },
     "limit": {
       "type": "integer",
+      "description": "Maximum number of bounded audit items to return.",
       "minimum": 1,
       "maximum": 100
     }
@@ -378,11 +422,22 @@ There is no `activate_demo_incident`, approval, generic execution, or unrestrict
 
 ## Drain-aware lifecycle and cancellation
 
-The central registry owns one registration `AbortController` and in-flight counter per tool. Its execute wrapper increments before dispatch and decrements in `finally`. When a phase change makes a tool invalid, the registry marks it for removal. If executions are in flight, removal waits; when the count reaches zero, the registry aborts the registration signal. It never aborts/removes and immediately re-registers the same name while an invocation is active.
+The bridge coordinator serializes and coalesces phase reconciliation so delayed registration promises always converge on the newest desired phase. The central registry owns one registration `AbortController` and in-flight counter per tool. Its execute wrapper increments before dispatch and decrements in `finally`. When a phase change makes a tool invalid, the registry marks it for removal. If executions are in flight, removal waits; when the count reaches zero, the registry waits through the post-settlement result-delivery grace before aborting the registration signal. It never aborts/removes and immediately re-registers the same name while an invocation is active.
+
+Pending removal is cancelled if the capability becomes valid again before drain. Registry teardown does not release document ownership until in-flight calls and registrations settle, so a remount cannot create duplicate registrations. Contract tests delay and reorder registration promises and require the final registered set to match the latest phase exactly.
 
 Do not assume a later `unregisterTool` method or Chrome-153-or-later behavior. A delayed removal can leave a tool visible briefly, which is why phase, revision, and approval checks remain mandatory inside application use cases.
 
-The `signal` received by `execute(input, { signal })` is separate from the registration controller. Pass it to cancellable route fetches and async work. Cancellation before atomic mutation returns `ABORTED`; cancellation must not produce a partial mutation or false success.
+The `signal` received by `execute(input, { signal })` is separate from the registration controller. Pass it to actual cancellable route fetches and async work. Pure synchronous mutations check a pre-aborted signal before the atomic mutation; do not add fake delays merely to manufacture cancellable work. Cancellation before atomic mutation returns `ABORTED`; cancellation must not produce a partial mutation or false success.
+
+## Domain-authoritative execution
+
+Tool execution has two ordered parts:
+
+1. validate input and obtain the application/domain result;
+2. render best-effort ephemeral activity, panel focus, announcements, or animation.
+
+Once the domain mutation commits, that success result must be returned even if an ephemeral effect fails. The adapter records rendering failure separately and never emits `INTERNAL_ERROR` for an already committed mutation. A thrown `AbortError` before commit maps to `ABORTED`; unexpected application failures map to `INTERNAL_ERROR` without stack details.
 
 ## Browser and content security
 

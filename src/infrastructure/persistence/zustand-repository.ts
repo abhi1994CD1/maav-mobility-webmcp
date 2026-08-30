@@ -1,5 +1,9 @@
 import type { CommandCenterRepository } from "@/application/ports";
-import type { CommandCenterState, RouteContext, SnapshotFocus } from "@/domain/types";
+import type { CommandCenterState, SnapshotFocus } from "@/domain/types";
+import {
+  createAuthoredRouteContext,
+  type RoutePresentationContext,
+} from "@/infrastructure/google/route-context-contract";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
 export type PanelId = "incident" | "plans" | "approval" | "audit";
@@ -22,7 +26,7 @@ export interface CommandCenterUiState {
   nextActivityId: number;
   webMcpStatus: WebMcpStatus;
   webMcpMessage: string;
-  routeContext: RouteContext;
+  routeContext: RoutePresentationContext;
   notice?: { tone: "INFO" | "SUCCESS" | "ERROR"; message: string };
 }
 
@@ -44,15 +48,7 @@ export function createCommandCenterStore(
       nextActivityId: 1,
       webMcpStatus: "CHECKING",
       webMcpMessage: "Detecting Chrome 150 WebMCP…",
-      routeContext: {
-        source: "AUTHORED_FALLBACK",
-        corridorId: "rosebank-sandton",
-        distanceMeters: 7800,
-        durationSeconds: 1020,
-        delaySeconds: 0,
-        capturedForSession: true,
-        reasonCode: "CLIENT_UNAVAILABLE",
-      },
+      routeContext: createAuthoredRouteContext("CLIENT_UNAVAILABLE"),
     },
   }));
 }

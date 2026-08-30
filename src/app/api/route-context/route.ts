@@ -1,20 +1,16 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  createAuthoredRouteContext,
+  normalizeGoogleRoutesPayload,
+} from "@/infrastructure/google/route-context-contract";
 
 const requestSchema = z.strictObject({
   corridorId: z.literal("rosebank-sandton"),
 });
 
 const fallback = (reasonCode: "NO_SERVER_KEY" | "ROUTES_UNAVAILABLE") =>
-  NextResponse.json({
-    source: "AUTHORED_FALLBACK" as const,
-    corridorId: "rosebank-sandton" as const,
-    distanceMeters: 7800,
-    durationSeconds: 1020,
-    delaySeconds: 0,
-    capturedForSession: true,
-    reasonCode,
-  });
+  NextResponse.json(createAuthoredRouteContext(reasonCode));
 
 export async function POST(request: Request) {
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
@@ -36,7 +32,8 @@ export async function POST(request: Request) {
         headers: {
           "content-type": "application/json",
           "x-goog-api-key": serverKey,
-          "x-goog-fieldmask": "routes.duration,routes.distanceMeters",
+          "x-goog-fieldmask":
+            "routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline",
         },
         body: JSON.stringify({
           origin: {
@@ -51,43 +48,23 @@ export async function POST(request: Request) {
           },
           travelMode: "DRIVE",
           routingPreference: "TRAFFIC_AWARE",
+          computeAlternativeRoutes: false,
+          units: "METRIC",
         }),
-        signal: AbortSignal.timeout(4_000),
+        signal: AbortSignal.any([
+          request.signal,
+          AbortSignal.timeout(4_000),
+        ]),
       },
     );
     if (!response.ok) return fallback("ROUTES_UNAVAILABLE");
 
     const payload: unknown = await response.json();
-    const route = extractRoute(payload);
+    const route = normalizeGoogleRoutesPayload(payload);
     if (!route) return fallback("ROUTES_UNAVAILABLE");
 
-    return NextResponse.json({
-      source: "GOOGLE" as const,
-      corridorId: "rosebank-sandton" as const,
-      distanceMeters: route.distanceMeters,
-      durationSeconds: route.durationSeconds,
-      delaySeconds: Math.max(0, route.durationSeconds - 1020),
-      capturedForSession: true,
-    });
+    return NextResponse.json(route);
   } catch {
     return fallback("ROUTES_UNAVAILABLE");
   }
-}
-
-function extractRoute(
-  payload: unknown,
-): { distanceMeters: number; durationSeconds: number } | undefined {
-  if (!payload || typeof payload !== "object") return undefined;
-  const routes = (payload as { routes?: unknown }).routes;
-  if (!Array.isArray(routes) || routes.length === 0) return undefined;
-  const route = routes[0] as Record<string, unknown>;
-  if (
-    typeof route.distanceMeters !== "number" ||
-    typeof route.duration !== "string"
-  ) {
-    return undefined;
-  }
-  const durationSeconds = Number.parseFloat(route.duration.replace("s", ""));
-  if (!Number.isFinite(durationSeconds)) return undefined;
-  return { distanceMeters: route.distanceMeters, durationSeconds };
 }

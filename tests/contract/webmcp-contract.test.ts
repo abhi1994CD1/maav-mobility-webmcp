@@ -9,6 +9,8 @@ import {
   stageInputSchema,
 } from "@/infrastructure/webmcp/schemas";
 import { toolsForPhase } from "@/infrastructure/webmcp/tools";
+import { AUTHORED_ROUTE_CONTEXT } from "@/infrastructure/google/route-context";
+import { setRouteContext } from "@/state/runtime";
 
 afterEach(() => vi.useRealTimers());
 
@@ -76,6 +78,50 @@ describe("dynamic tool matrix", () => {
       }
     });
   }
+
+  it("exposes exactly the six public tool names across all phases", () => {
+    const names = new Set(
+      Object.keys(expected).flatMap((phase) =>
+        toolsForPhase(phase as OperationalPhase).map((tool) => tool.name),
+      ),
+    );
+    expect([...names].sort()).toEqual([
+      "commit_approved_recovery",
+      "evaluate_recovery_options",
+      "get_action_audit_log",
+      "get_network_snapshot",
+      "rollback_last_recovery",
+      "stage_recovery_plan",
+    ]);
+  });
+
+  it("never returns encoded route geometry from the network snapshot", async () => {
+    const encodedPolyline = "private-presentation-geometry";
+    setRouteContext({
+      source: "GOOGLE",
+      corridorId: "rosebank-sandton",
+      distanceMeters: 7600,
+      durationSeconds: 1180,
+      staticDurationSeconds: 1020,
+      delaySeconds: 160,
+      encodedPolyline,
+      capturedForSession: true,
+    });
+    const snapshot = toolsForPhase("READY").find(
+      (tool) => tool.name === "get_network_snapshot",
+    );
+
+    try {
+      const result = await snapshot!.execute(
+        { focus: "all" },
+        { signal: new AbortController().signal },
+      );
+      expect(JSON.stringify(result)).not.toContain("encodedPolyline");
+      expect(JSON.stringify(result)).not.toContain(encodedPolyline);
+    } finally {
+      setRouteContext({ ...AUTHORED_ROUTE_CONTEXT });
+    }
+  });
 
   it("marks only read tools read-only and audit output untrusted", () => {
     const tools = toolsForPhase("INCIDENT_ACTIVE");

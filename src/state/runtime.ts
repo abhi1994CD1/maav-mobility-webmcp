@@ -1,6 +1,7 @@
 import { CommandCenterService } from "@/application/command-center-service";
 import { createInitialCommandCenterState } from "@/domain/scenario";
-import type { RouteContext, SnapshotFocus } from "@/domain/types";
+import type { SnapshotFocus } from "@/domain/types";
+import type { RoutePresentationContext } from "@/infrastructure/google/route-context-contract";
 import {
   createCommandCenterStore,
   type AgentActivityItem,
@@ -37,7 +38,7 @@ export function openPanel(openPanel: PanelId): void {
   patchUi({ openPanel });
 }
 
-export function setRouteContext(routeContext: RouteContext): void {
+export function setRouteContext(routeContext: RoutePresentationContext): void {
   patchUi({ routeContext });
 }
 

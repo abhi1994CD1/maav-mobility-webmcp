@@ -69,14 +69,16 @@ Use small pure functions, explicit domain types, discriminated command results, 
 
 ### Google adapters
 
-- Run Maps JavaScript API only in the browser with a referrer-restricted key.
-- Call Routes API only through a narrow server route handler with an API-restricted server key.
-- Normalize allowed responses into an internal route-context DTO and retain it only in memory for the demo session.
+- Use the pinned `@vis.gl/react-google-maps` React presentation adapter and its `APIProvider`; do not maintain a second manual Maps JavaScript loader.
+- Run Maps JavaScript API only in the browser with the referrer-restricted `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`; `NEXT_PUBLIC_GOOGLE_MAP_ID` selects the map style and is not a Routes credential.
+- Treat `GOOGLE_ROUTES_API_KEY` as optional and call Routes API only through a narrow server route handler with that API-restricted server key; never send it to the browser.
+- Request only traffic-aware duration, static duration, distance, and encoded route geometry for the fixed Rosebank-Sandton segment. Normalize them into a bounded internal route-presentation DTO and retain it only in browser memory for the demo session.
 - Supply a clearly labelled authored fallback when Routes API is unavailable.
+- Keep map loading, failure, camera, selection, and overlay animation state ephemeral so Google availability never changes domain revision or recovery results.
 
-## Planned code boundaries
+## Code boundaries
 
-Implementation should grow into these boundaries as slices require them; do not create empty directories or `.gitkeep` placeholders.
+The implementation follows these boundaries. Add deeper modules only when an implemented slice requires them; do not create empty directories or `.gitkeep` placeholders.
 
 ```text
 src/
@@ -261,24 +263,93 @@ An `OperationalSnapshot` must not contain or restore:
 
 `rollback_last_recovery` is legal only in `RECOVERED` with a matching `expectedRevision` and an available snapshot. It restores the operational fields, clears evaluated plans, staged-plan state, approval, and the consumed rollback snapshot, appends rollback domain/audit events, increments revision exactly once, and enters `ROLLED_BACK`. Audit history stays append-only. The activity rail remains an independent UI history and is not rewound.
 
-## Recovery calculation and Google boundary
+## Deterministic counterfactual decision core
 
-1. Generate a small finite set of operationally distinct candidates.
-2. Simulate each candidate from the same authored operational snapshot.
-3. Calculate metrics in domain code.
-4. Reject hard-constraint violations.
-5. Rank valid candidates with an explicit weighted score.
-6. Return metrics and explanation codes, not only a score.
+The decision core is a bounded passenger-flow projection, not a lookup table, general route optimizer, LLM, or real transport simulator. `docs/RECOVERY_ENGINE.md` owns the implementable data model, formulas, and acceptance tests.
 
-Primary metrics are on-time arrival percentage, maximum and mean wait, affected and unserved passengers, accessibility violations, spare vehicles, energy delta, and projected recovery time.
+Its authoritative pipeline is:
 
-For the canonical judging scenario, authored operational inputs determine hard constraints, metrics, and plan ranking. Live Google route or traffic context may enrich map geometry, route context, and informational display, but it is not the sole source of any hard constraint and cannot change the canonical winning plan. The same scenario seed therefore produces the same recovery outcome with live Routes data, different traffic, or the labelled authored fallback. No Google call occurs inside the deterministic simulation loop.
+```text
+current incident snapshot
++ immutable scenario model
++ operator objectives
++ action-only recovery candidates
+        |
+        v
+feasibility compiler
+        |
+        v
+minute-step counterfactual projection
+        |
+        v
+derived metrics
+        |
+        v
+hard-constraint safety kernel
+        |
+        v
+normalized deterministic ranking
+```
 
-Randomness inside simulation must come only from the scenario's seeded PRNG. Deterministic tests do not read the current wall clock.
+Candidate definitions may author vehicle assignments, service patterns, headways, activation delays, travel assumptions, and energy rates. They must not contain their final KPI outcomes. Every candidate begins from an independent clone of the same incident snapshot. Evaluation receives operational state; it may not calculate from objectives alone.
+
+The feasibility compiler rejects structurally invalid resource assignments, blocked-segment traversal, and missing reserve capacity before simulation. Insufficient accessible service remains a visible calculated outcome: the simulator reports the accessibility deficit and the hard-constraint kernel rejects the plan. The simulator also derives on-time percentage, maximum and mean wait, affected and unserved passengers, spare vehicles used, energy delta, and recovery time. Hard constraints run before soft scoring; a score can never compensate for an accessibility failure.
+
+An evaluated plan stores the exact candidate-specific operational projection reviewed by the human. Commit applies that stored projection only after the existing approval and revision checks. It does not recalculate against changed inputs and does not apply a shared hardcoded recovery mutation. Rollback continues to restore the narrow pre-commit `OperationalSnapshot`.
+
+Application mappers expose compact plan summaries, metric deltas, bounded explanation codes, score components, and calculation provenance. They never spread internal cohorts, assignments, or projections into WebMCP or UI results.
+
+### Integration seam, not integration claim
+
+The authored scenario provider is the current operational-input adapter. The domain core accepts internal operational types rather than vendor payloads. A future fleet-management adapter could normalize an incumbent snapshot into those types, but this repository does not implement or claim a live fleet connector, dispatch write-back, safety certification, or customer deployment.
+
+### Google boundary
+
+Live Google route or traffic context may enrich map geometry, bounded route context, and informational display. It is not an input to canonical hard constraints or scoring. Runs with `GOOGLE`, different live delay, or `AUTHORED_FALLBACK` must therefore produce byte-identical canonical plan metrics and ranking. No Google call occurs inside the deterministic decision core.
+
+The full North Spine remains the authored simulated operational corridor in `OperationalState`. Google Routes supplies a road-shaped presentation overlay only for the fixed Rosebank-Sandton affected segment. On a Google Maps surface, the authored spine remains visible as a subdued operational backbone while the Google segment is prominent and receives the simulated `HEALTHY`, `DISRUPTED`, or `RECOVERED` status colour. When Routes is unavailable or invalid, the authored operational path becomes the prominent route. The authored SVG never attempts to reproduce Google geometry.
+
+The infrastructure-owned route-presentation DTO adds `staticDurationSeconds` and an optional bounded `encodedPolyline` to the existing informational route metrics. It exists only in ephemeral UI state. Encoded geometry is never placed in `CommandCenterState`, `OperationalSnapshot`, audit, approval, recovery plans, application commands, or WebMCP results, and is never persisted. `delaySeconds` is `max(0, traffic-aware duration - static duration)`; it is a traffic-aware session snapshot, not a continuous feed, fleet truth, passenger truth, or recovery-scoring input.
+
+The four presentation outcomes are authoritative:
+
+| Maps JavaScript | Routes context | Label | Route rendering |
+|---|---|---|---|
+| Ready | Google | `GOOGLE MAPS + ROUTES CONTEXT` | Subdued authored spine plus prominent encoded Google segment |
+| Ready | Authored fallback | `GOOGLE MAPS • AUTHORED ROUTE FALLBACK` | Prominent authored operational path |
+| Unavailable | Google | `AUTHORED MAP • GOOGLE ROUTE CONTEXT` | Authored SVG only; normalized Google metrics remain informational |
+| Unavailable | Authored fallback | `AUTHORED MAP + ROUTE FALLBACK` | Fully authored deterministic presentation |
+
+The model uses no wall-clock time or unseeded randomness. Any future stochastic behavior must use the scenario's explicit seeded PRNG and preserve reproducible tests.
+
+## Human-authorized WebMCP capability choreography
+
+WebMCP is a phase-shaped capability surface, not a static RPC menu. Domain phase determines which consequential capability is discoverable, while application preconditions remain the authorization boundary.
+
+```text
+INCIDENT_ACTIVE     -> evaluate capability
+OPTIONS_EVALUATED  -> stage capability
+PLAN_STAGED        -> no agent commit capability
+human approval     -> revision-bound commit capability appears
+RECOVERED          -> rollback capability replaces commit
+```
+
+This creates four independent protections:
+
+1. discovery communicates the legal next action;
+2. runtime schemas reject malformed requests;
+3. phase, revision, plan, and approval checks reject stale or replayed calls;
+4. the visible UI retains the human-only decision.
+
+The snapshot query returns compact recovery context after agent context loss: next actor/action, recommended/staged/approved plan IDs when present, and rollback availability. It returns no approval secret or unrestricted state.
+
+Tool results are domain-authoritative. Ephemeral activity, announcements, panel focus, and animation are best-effort effects after the application result exists. A rendering failure must not convert a committed mutation into an `INTERNAL_ERROR` response.
+
+Trusted tool results do not reflect arbitrary caller text. In particular, invalid plan identifiers produce stable generic errors. User-supplied rollback reasons appear only through the audit output that declares `untrustedContentHint: true`.
 
 ## Chrome 150 WebMCP contract
 
-Use the imperative Chrome 150 surface at `document.modelContext`; never read or fall back to `navigator.modelContext`. Add the official `webmcp-types` package as the TypeScript declaration source when implementation begins.
+Use the imperative Chrome 150 surface at `document.modelContext`; never read or fall back to `navigator.modelContext`. Use the official `webmcp-types` package as the TypeScript declaration source.
 
 Each registered definition includes:
 
@@ -297,18 +368,20 @@ Each registered definition includes:
 
 ### Drain-aware registration lifecycle
 
-One central registry owns every registered tool's registration `AbortController`, desired/registered status, and in-flight execution count.
+One central coordinator owns the latest desired phase and serializes/coalesces reconciliation. One central registry owns every registered tool's registration `AbortController`, desired/registered status, and in-flight execution count. Overlapping phase notifications must converge on the newest desired tool set even when `registerTool()` promises resolve out of order.
 
-1. Registration creates one controller and passes its signal to `document.modelContext.registerTool`.
-2. The `execute` wrapper increments the tool's in-flight count before validation/use-case dispatch and decrements it in `finally`.
-3. A phase change recomputes the desired tool set.
+1. A phase notification replaces the coordinator's desired definitions; it does not start an independent reconciliation race.
+2. Registration creates one controller and passes its signal to `document.modelContext.registerTool`.
+3. The `execute` wrapper increments the tool's in-flight count before validation/use-case dispatch and decrements it in `finally`.
 4. If a tool should be removed while its count is nonzero, mark removal pending; do not abort its registration or replace the same name.
 5. After the last callback settles, defer removal through a short post-settlement task/grace before aborting that tool's registration controller. Chrome 150 can otherwise reject the caller after the domain mutation has already committed because result delivery is still finishing.
 6. If the tool becomes desired again before draining, cancel the pending removal rather than churn the registration.
+7. Reconciliation repeats until the registered set equals the newest desired set.
+8. Bridge teardown remains authoritative until registrations and in-flight executions have drained; a remount must not create a second registry for the same document during teardown.
 
 Do not assume a later Chrome `unregisterTool` API or Chrome-153-or-later lifecycle behavior. Delayed registry removal can briefly leave a stale tool discoverable, so every mutation use case must enforce phase, revision, and approval preconditions at execution time.
 
-The registration controller owns discoverability; it is not the invocation cancellation signal. Invocation cancellation is handled by `execute(input, { signal })` and must not partially commit a mutation. The adapter forwards a supplied invocation signal and provides a non-aborted fallback when Chrome 150's deterministic `executeTool` test path omits the callback options object.
+The registration controller owns discoverability; it is not the invocation cancellation signal. Invocation cancellation is handled by `execute(input, { signal })` and must not partially commit a mutation. The adapter forwards a supplied invocation signal into actual cancellable work and provides a non-aborted fallback when Chrome 150's deterministic `executeTool` test path omits the callback options object. Pure synchronous mutations check a pre-aborted signal before their atomic mutation; do not add artificial delays solely to demonstrate cancellation.
 
 ## WebMCP browser security
 
@@ -342,7 +415,7 @@ The local development target is:
 
 Local hard gates are lint, typecheck, Vitest unit/contract tests, production build, and a manual Chrome 150 real-WebMCP smoke test. The latest locally downloaded Playwright browser is not a development prerequisite. Full Playwright E2E, including the golden flow, may run in Linux CI.
 
-Required automated coverage includes deterministic replay, hard-constraint filtering, plan ranking, invalid transitions, stale revisions, approval binding/invalidation/consumption, operational-only rollback, WebMCP validation, the drain-aware state-registration matrix, Routes fallback, and the complete golden flow.
+Required automated coverage includes deterministic replay, candidate feasibility, passenger conservation, monotonic demand/capacity/energy properties, objective sensitivity, hard-constraint filtering, plan ranking, invalid transitions, stale revisions, approval binding/invalidation/consumption, candidate-specific commit, operational-only rollback, WebMCP validation, serialized drain-aware registration, stale/replayed/simultaneous calls, trusted/untrusted output handling, Routes fallback equality, and the complete bridge-driven golden flow.
 
 ## Deployment
 
@@ -350,4 +423,5 @@ Required automated coverage includes deterministic replay, hard-constraint filte
 - No database; in-memory/session state only.
 - Environment variables only for keys and map ID.
 - Deterministic scenario bundled with the application.
-- Build, unit/contract tests, and Linux E2E in CI.
+- Build, unit/contract tests, and Linux bridge-driven E2E in CI.
+- The submitted release SHA must have green public CI, a discoverable HTTPS URL, and a dated native Chrome 150 evidence report.

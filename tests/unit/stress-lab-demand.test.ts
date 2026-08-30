@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  MORNING_PEAK_RESILIENCE_V1,
+  MORNING_PEAK_RESILIENCE_V2,
   SANDTON_ROSEBANK_V1_NETWORK,
   createGoldenExperimentInputs,
 } from "@/data/scenarios/sandton-rosebank-v1";
@@ -11,8 +11,8 @@ import { seed } from "@/domain/stress-lab/types";
 
 function generate(seedValue = 7) {
   return generateDemandTrace({
-    definition: MORNING_PEAK_RESILIENCE_V1.demand,
-    horizon: MORNING_PEAK_RESILIENCE_V1.horizon,
+    definition: MORNING_PEAK_RESILIENCE_V2.demand,
+    horizon: MORNING_PEAK_RESILIENCE_V2.horizon,
     network: SANDTON_ROSEBANK_V1_NETWORK,
     seed: seed(seedValue),
   });
@@ -66,15 +66,15 @@ describe("Gate 3 seeded demand", () => {
   it("does not mutate its network, definition, or horizon inputs", () => {
     const before = JSON.stringify({
       network: SANDTON_ROSEBANK_V1_NETWORK,
-      definition: MORNING_PEAK_RESILIENCE_V1.demand,
-      horizon: MORNING_PEAK_RESILIENCE_V1.horizon,
+      definition: MORNING_PEAK_RESILIENCE_V2.demand,
+      horizon: MORNING_PEAK_RESILIENCE_V2.horizon,
     });
     generate();
     expect(
       JSON.stringify({
         network: SANDTON_ROSEBANK_V1_NETWORK,
-        definition: MORNING_PEAK_RESILIENCE_V1.demand,
-        horizon: MORNING_PEAK_RESILIENCE_V1.horizon,
+        definition: MORNING_PEAK_RESILIENCE_V2.demand,
+        horizon: MORNING_PEAK_RESILIENCE_V2.horizon,
       }),
     ).toBe(before);
   });

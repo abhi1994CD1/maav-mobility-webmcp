@@ -4,8 +4,14 @@ import {
   STRESS_LAB_CANONICALIZATION_VERSION,
   STRESS_LAB_FINGERPRINT_VERSION,
   StressLabInputValidationError,
+  type ConstraintEvaluation,
+  type ControllerId,
+  type ControllerVersion,
   type Fingerprint,
-  type RunArtifact,
+  type MetricSet,
+  type SimulationEvent,
+  type SimulationSnapshot,
+  type SimulationTerminalState,
 } from "./types";
 
 const SHA_256_INITIAL_STATE = [
@@ -214,22 +220,62 @@ export function fingerprintCanonical(scope: string, value: unknown): Fingerprint
   return createFingerprintDocument(scope, value).fingerprint;
 }
 
-export function fingerprintRunEvidence(
-  run: Pick<
-    RunArtifact,
-    "inputFingerprint" | "events" | "metrics" | "constraints" | "status"
-  >,
-): Fingerprint {
-  if (run.status !== "COMPLETED" || !run.metrics || !run.constraints) {
-    throw new StressLabInputValidationError(
-      "RUN_EVIDENCE_INCOMPLETE",
-      "Only completed runs with metrics and constraint evaluations can be fingerprinted.",
-    );
-  }
-  return fingerprintCanonical("RUN_RESULT_EVIDENCE", {
-    inputFingerprint: run.inputFingerprint,
-    normalizedEventLedger: run.events,
-    normalizedMetrics: run.metrics,
-    constraintEvaluations: run.constraints,
+export interface EventLedgerIdentityInput {
+  readonly eventSchemaVersion: string;
+  readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: string;
+  readonly tickSemanticsVersion: string;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly events: readonly SimulationEvent[];
+}
+
+export function createEventLedgerDocument(
+  ledger: EventLedgerIdentityInput,
+): FingerprintDocument {
+  return createFingerprintDocument("EVENT_LEDGER", {
+    eventSchemaVersion: ledger.eventSchemaVersion,
+    inputFingerprint: ledger.inputFingerprint,
+    engineVersion: ledger.engineVersion,
+    tickSemanticsVersion: ledger.tickSemanticsVersion,
+    controllerId: ledger.controllerId,
+    controllerVersion: ledger.controllerVersion,
+    orderedEvents: ledger.events,
+  });
+}
+
+export interface RunResultIdentityInput {
+  readonly resultSchemaVersion: string;
+  readonly eventSchemaVersion: string;
+  readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: string;
+  readonly tickSemanticsVersion: string;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly metricDefinitionVersion: string;
+  readonly eventLedgerFingerprint: Fingerprint;
+  readonly snapshots: readonly SimulationSnapshot[];
+  readonly terminalState: SimulationTerminalState;
+  readonly metrics: MetricSet;
+  readonly constraints: readonly ConstraintEvaluation[];
+}
+
+export function runResultIdentityValue(
+  result: RunResultIdentityInput,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    resultSchemaVersion: result.resultSchemaVersion,
+    eventSchemaVersion: result.eventSchemaVersion,
+    inputFingerprint: result.inputFingerprint,
+    engineVersion: result.engineVersion,
+    tickSemanticsVersion: result.tickSemanticsVersion,
+    controllerId: result.controllerId,
+    controllerVersion: result.controllerVersion,
+    metricDefinitionVersion: result.metricDefinitionVersion,
+    eventLedgerFingerprint: result.eventLedgerFingerprint,
+    orderedSnapshots: result.snapshots,
+    terminalState: result.terminalState,
+    normalizedMetrics: result.metrics,
+    constraintEvaluations: result.constraints,
   });
 }

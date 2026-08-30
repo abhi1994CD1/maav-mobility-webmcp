@@ -4,8 +4,9 @@
 
 This document owns target system boundaries, dependency direction, artifact
 flow, state ownership, adapter responsibilities, and atomic command behavior.
-Gate 1 defines this architecture without implementing it. The current baseline
-runtime remains separate until later gated slices build and verify Stress Lab.
+Gate 4 implements the deterministic headless domain slice; the current browser
+runtime remains separate until later gated slices integrate it through the
+application boundary.
 
 ## Architectural style
 
@@ -82,19 +83,38 @@ controlled treatment; equal vehicle IDs are not required.
 
 Pure TypeScript domain modules own:
 
-- versioned network and scenario types;
+- versioned generic-network and scenario types;
 - seeded passenger trace generation;
-- deterministic dispatch, movement, boarding, service, battery, energy,
-  failure, and recovery;
-- immutable events and replay snapshots;
+- the causally restricted synchronous controller-observation/intent port;
+- authoritative intent validation plus deterministic dispatch, movement,
+  boarding, service, battery, energy, failure, and recovery;
+- replay-complete immutable events, verified-input-bound pure event replay, and
+  authoritative replay snapshots committed by the result fingerprint;
 - metric and hard-constraint derivation;
 - artifact compatibility and deltas;
 - evidence-bound finding candidates;
-- canonical serialization and evidence fingerprints;
+- canonical serialization plus separate event-ledger and final-result
+  fingerprints; the latter commits every ordered snapshot as well as terminal
+  state, KPIs, and constraints;
 - invariants and safe failures.
 
 The domain never authors final KPI tables, preferred-scenario constants, or
 agent prose. `docs/SIMULATION_ENGINE.md` owns exact simulation rules.
+
+Trusted artifact ingestion is stricter than hashing. Event validation is
+recursively closed-world and binds every zone, edge, ordered edge fact, and path
+to the verified canonical network. A movement leg is trusted only when one
+state-aware replay validator also derives its origin, destination, reservation
+ownership, and passenger cohort from the already-replayed vehicle state and
+immutable requests. This binding permits any connected authored path between
+those endpoints; replay neither imports the router nor requires its preferred
+path. The public
+`verifyTrustedSimulationResult` boundary accepts input, ledger, and result
+together, replays every supplied snapshot's documented post-tick ledger prefix,
+checks the terminal state, then verifies canonical result bytes and identity.
+The engine may use an internal result-fingerprint construction helper for its
+own already-derived artifact; that helper is not exported as a semantic trust
+decision. A hash proves byte identity, not domain truth.
 
 ### Application
 

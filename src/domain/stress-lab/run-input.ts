@@ -10,9 +10,11 @@ import {
   STRESS_LAB_FINGERPRINT_VERSION,
   STRESS_LAB_INPUT_SCHEMA_VERSION,
   STRESS_LAB_METRIC_DEFINITION_VERSION,
+  STRESS_LAB_NETWORK_SCHEMA_VERSION,
   STRESS_LAB_NETWORK_VERSION,
   STRESS_LAB_PRESET_VERSION,
   StressLabInputValidationError,
+  networkVersion,
   type Fingerprint,
   type GoldenExperimentInputManifest,
   type PreparedRunInput,
@@ -122,21 +124,32 @@ export function validateStressLabRunInput(input: StressLabRunInput): ValidationR
     }
   }
 
-  if (input.network.networkVersion !== STRESS_LAB_NETWORK_VERSION) {
+  try {
+    networkVersion(input.network.networkVersion);
+  } catch {
     issues.push(
       issue(
-        "NETWORK_VERSION_MISMATCH",
+        "INVALID_NETWORK_VERSION",
         "network.networkVersion",
-        `Network version must be ${STRESS_LAB_NETWORK_VERSION}.`,
+        "Network version must use the stable ASCII version identifier format.",
       ),
     );
   }
-  if (input.network.inputSchemaVersion !== STRESS_LAB_INPUT_SCHEMA_VERSION) {
+  if (input.networkVersion !== input.network.networkVersion) {
+    issues.push(
+      issue(
+        "NETWORK_VERSION_MISMATCH",
+        "networkVersion",
+        "Declared run-input network version must equal the embedded network version.",
+      ),
+    );
+  }
+  if (input.network.inputSchemaVersion !== STRESS_LAB_NETWORK_SCHEMA_VERSION) {
     issues.push(
       issue(
         "NETWORK_SCHEMA_MISMATCH",
         "network.inputSchemaVersion",
-        `Network schema must be ${STRESS_LAB_INPUT_SCHEMA_VERSION}.`,
+        `Network schema must be ${STRESS_LAB_NETWORK_SCHEMA_VERSION}.`,
       ),
     );
   }
@@ -213,6 +226,20 @@ export function validateStressLabRunInput(input: StressLabRunInput): ValidationR
         "INVALID_HORIZON",
         "horizon",
         "Horizon duration and tick must be positive aligned integers.",
+      ),
+    );
+  }
+  if (
+    !Number.isSafeInteger(input.terminalEvaluationSecond) ||
+    input.terminalEvaluationSecond !==
+      horizon.durationSeconds + input.scenario.constraints.maximumWaitSeconds ||
+    input.terminalEvaluationSecond % horizon.tickSeconds !== 0
+  ) {
+    issues.push(
+      issue(
+        "INVALID_TERMINAL_EVALUATION_SECOND",
+        "terminalEvaluationSecond",
+        "Terminal evaluation must be tick-aligned and equal intake duration plus the inclusive maximum-wait allowance.",
       ),
     );
   }
@@ -530,6 +557,15 @@ export function validateStressLabRunInput(input: StressLabRunInput): ValidationR
         "DUPLICATE_DISRUPTION_ID",
         "disruptions",
         "Disruption IDs must be unique within a run input.",
+      ),
+    );
+  }
+  if (input.disruptions.length > 1) {
+    issues.push(
+      issue(
+        "TOO_MANY_DISRUPTIONS",
+        "disruptions",
+        "H0 supports at most one equivalent vehicle failure per run input.",
       ),
     );
   }

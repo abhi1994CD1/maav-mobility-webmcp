@@ -17,6 +17,9 @@ export type FindingId = Brand<string, "FindingId">;
 export type EvidenceId = Brand<string, "EvidenceId">;
 export type OperationId = Brand<string, "OperationId">;
 export type Fingerprint = Brand<string, "Fingerprint">;
+export type NetworkVersion = Brand<string, "NetworkVersion">;
+export type ControllerId = Brand<string, "ControllerId">;
+export type ControllerVersion = Brand<string, "ControllerVersion">;
 
 export type SimulatedSecond = Brand<number, "SimulatedSecond">;
 export type Metres = Brand<number, "Metres">;
@@ -30,18 +33,28 @@ export type LatitudeMicrodegrees = Brand<number, "LatitudeMicrodegrees">;
 export type LongitudeMicrodegrees = Brand<number, "LongitudeMicrodegrees">;
 
 export const STRESS_LAB_INPUT_SCHEMA_VERSION =
+  "run-input-schema-v2" as const;
+export const STRESS_LAB_NETWORK_SCHEMA_VERSION =
   "stress-lab-input-schema-v1" as const;
 export const STRESS_LAB_CANONICALIZATION_VERSION = "canonical-json-v1" as const;
 export const STRESS_LAB_FINGERPRINT_VERSION = "sha256-v1" as const;
-export const STRESS_LAB_NETWORK_VERSION = "sandton-rosebank-v1" as const;
+export const STRESS_LAB_NETWORK_VERSION =
+  "sandton-rosebank-v1" as NetworkVersion;
 export const STRESS_LAB_PRESET_VERSION =
-  "morning-peak-resilience-v1" as const;
+  "morning-peak-resilience-v2" as const;
 export const STRESS_LAB_DEMAND_GENERATOR_VERSION = "demand-v1" as const;
-export const STRESS_LAB_ENGINE_VERSION = "maav-sim-v1" as const;
+export const STRESS_LAB_ENGINE_VERSION = "maav-sim-v2" as const;
+export const STRESS_LAB_TICK_SEMANTICS_VERSION =
+  "maav-30-second-tick-v2" as const;
+export const STRESS_LAB_CONTROLLER_VERSION =
+  "oldest-wait-nearest-idle-v1" as const;
 export const STRESS_LAB_METRIC_DEFINITION_VERSION =
-  "stress-lab-metrics-v1" as const;
+  "stress-lab-metrics-v2" as const;
 export const STRESS_LAB_DISRUPTION_POLICY_VERSION =
   "equivalent-vehicle-failure-v1" as const;
+export const STRESS_LAB_EVENT_SCHEMA_VERSION = "event-schema-v2" as const;
+export const STRESS_LAB_RESULT_SCHEMA_VERSION =
+  "simulation-result-schema-v2" as const;
 
 const STABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const FINGERPRINT_PATTERN = /^sha256-v1:[0-9a-f]{64}$/u;
@@ -79,6 +92,12 @@ export const evidenceId = (value: string): EvidenceId =>
   stableId<EvidenceId>("EvidenceId", value);
 export const operationId = (value: string): OperationId =>
   stableId<OperationId>("OperationId", value);
+export const networkVersion = (value: string): NetworkVersion =>
+  stableId<NetworkVersion>("NetworkVersion", value);
+export const controllerId = (value: string): ControllerId =>
+  stableId<ControllerId>("ControllerId", value);
+export const controllerVersion = (value: string): ControllerVersion =>
+  stableId<ControllerVersion>("ControllerVersion", value);
 
 export function fingerprint(value: string): Fingerprint {
   if (!FINGERPRINT_PATTERN.test(value)) {
@@ -167,8 +186,8 @@ export interface NetworkEdge {
 }
 
 export interface NetworkFixture {
-  readonly inputSchemaVersion: typeof STRESS_LAB_INPUT_SCHEMA_VERSION;
-  readonly networkVersion: typeof STRESS_LAB_NETWORK_VERSION;
+  readonly inputSchemaVersion: typeof STRESS_LAB_NETWORK_SCHEMA_VERSION;
+  readonly networkVersion: NetworkVersion;
   readonly zones: readonly NetworkZone[];
   readonly edges: readonly NetworkEdge[];
 }
@@ -280,8 +299,9 @@ export interface GoldenExperimentPreset {
   readonly metricDefinitionVersion: typeof STRESS_LAB_METRIC_DEFINITION_VERSION;
   readonly canonicalizationVersion: typeof STRESS_LAB_CANONICALIZATION_VERSION;
   readonly fingerprintVersion: typeof STRESS_LAB_FINGERPRINT_VERSION;
-  readonly networkVersion: typeof STRESS_LAB_NETWORK_VERSION;
+  readonly networkVersion: NetworkVersion;
   readonly horizon: SimulationHorizon;
+  readonly terminalEvaluationSecond: SimulatedSecond;
   readonly seed: Seed;
   readonly demand: DemandDefinition;
   readonly scenarios: Readonly<Record<ScenarioSlot, ScenarioConfiguration>>;
@@ -299,7 +319,9 @@ export interface StressLabRunInput {
   readonly presetVersion: typeof STRESS_LAB_PRESET_VERSION;
   readonly scenarioSlot: ScenarioSlot;
   readonly horizon: SimulationHorizon;
+  readonly terminalEvaluationSecond: SimulatedSecond;
   readonly seed: Seed;
+  readonly networkVersion: NetworkVersion;
   readonly network: NetworkFixture;
   readonly networkFingerprint: Fingerprint;
   readonly demandDefinition: DemandDefinition;
@@ -320,7 +342,7 @@ export interface GoldenExperimentInputManifest {
   readonly fingerprintVersion: typeof STRESS_LAB_FINGERPRINT_VERSION;
   readonly presetVersion: typeof STRESS_LAB_PRESET_VERSION;
   readonly presetFingerprint: Fingerprint;
-  readonly networkVersion: typeof STRESS_LAB_NETWORK_VERSION;
+  readonly networkVersion: NetworkVersion;
   readonly networkFingerprint: Fingerprint;
   readonly demandGeneratorVersion: typeof STRESS_LAB_DEMAND_GENERATOR_VERSION;
   readonly demandFingerprint: Fingerprint;
@@ -351,6 +373,10 @@ export interface PassengerState {
   readonly state: PassengerLifecycleState;
   readonly assignedVehicleId?: VehicleId;
   readonly currentZoneId?: ZoneId;
+  readonly firstBoardedAtSecond?: SimulatedSecond;
+  readonly servedAtSecond?: SimulatedSecond;
+  readonly affectedByDisruptionId?: DisruptionId;
+  readonly recoveryReleaseSecond?: SimulatedSecond;
 }
 
 export type VehicleOperationalState =
@@ -360,6 +386,42 @@ export type VehicleOperationalState =
   | "TRAVELLING_SERVICE"
   | "FAILED";
 
+export type VehicleLegKind = "EMPTY" | "SERVICE";
+export type VehicleLegPurpose = "PICKUP" | "PASSENGER_SERVICE";
+
+export interface ActiveLegEdgeEvidence {
+  readonly edgeId: EdgeId;
+  readonly fromZoneId: ZoneId;
+  readonly toZoneId: ZoneId;
+  readonly distanceMetres: Metres;
+  readonly travelSeconds: SimulatedSecond;
+  readonly energyWh: WattHours;
+  readonly startOffsetSeconds: SimulatedSecond;
+  readonly endOffsetSeconds: SimulatedSecond;
+}
+
+export interface ActiveLegEvidence {
+  readonly kind: VehicleLegKind;
+  readonly purpose: VehicleLegPurpose;
+  readonly fromZoneId: ZoneId;
+  readonly toZoneId: ZoneId;
+  readonly edgeIds: readonly EdgeId[];
+  readonly pathZoneIds: readonly ZoneId[];
+  readonly passengerIds: readonly PassengerId[];
+  readonly reservationIds: readonly PassengerId[];
+  readonly edges: readonly ActiveLegEdgeEvidence[];
+  readonly distanceMetres: Metres;
+  readonly travelSeconds: SimulatedSecond;
+  readonly energyWh: WattHours;
+  readonly startedAtSecond: SimulatedSecond;
+  readonly endsAtSecond: SimulatedSecond;
+  readonly onboardCountAtDeparture: Count;
+  readonly accountedDistanceMetres: Metres;
+  readonly accountedEnergyWh: WattHours;
+}
+
+export type VehicleLeg = ActiveLegEvidence;
+
 export interface VehicleState {
   readonly id: VehicleId;
   readonly state: VehicleOperationalState;
@@ -368,10 +430,25 @@ export interface VehicleState {
   readonly onboardPassengerIds: readonly PassengerId[];
   readonly reservedPassengerIds: readonly PassengerId[];
   readonly batteryWh: WattHours;
+  readonly assignedOriginZoneId?: ZoneId;
+  readonly assignedDestinationZoneId?: ZoneId;
+  readonly activeLeg?: VehicleLeg;
+  readonly activeBoardingOperation?: ActiveBoardingOperation;
+  readonly dwellEndsAtSecond?: SimulatedSecond;
+  readonly failedByDisruptionId?: DisruptionId;
+}
+
+export interface ActiveBoardingOperation {
+  readonly startedAtSecond: SimulatedSecond;
+  readonly completesAtSecond: SimulatedSecond;
+  readonly passengerIds: readonly PassengerId[];
+  readonly originZoneId: ZoneId;
+  readonly destinationZoneId: ZoneId;
 }
 
 export type SimulationEventType =
   | "RUN_STARTED"
+  | "TICK_OBSERVED"
   | "PASSENGER_ARRIVED"
   | "VEHICLE_DISPATCHED_EMPTY"
   | "VEHICLE_ARRIVED_PICKUP"
@@ -384,7 +461,8 @@ export type SimulationEventType =
   | "PASSENGERS_REQUEUED"
   | "RECOVERY_ASSIGNED"
   | "RECOVERY_COMPLETED"
-  | "DISPATCH_BLOCKED_RESERVE"
+  | "ACTION_REJECTED"
+  | "DISRUPTION_TARGET_NOT_FOUND"
   | "RUN_COMPLETED";
 
 export type SimulationFactValue =
@@ -392,7 +470,38 @@ export type SimulationFactValue =
   | number
   | boolean
   | null
-  | readonly string[];
+  | readonly string[]
+  | ActiveLegEvidence
+  | ActiveBoardingOperation;
+
+export type ActionRejectedReasonCode =
+  | "CAPACITY_EXCEEDED"
+  | "DUPLICATE_PASSENGER"
+  | "EMPTY_PASSENGER_SET"
+  | "ORIGIN_MISMATCH"
+  | "DESTINATION_MISMATCH"
+  | "PASSENGER_NOT_ELIGIBLE"
+  | "RESERVE_INFEASIBLE"
+  | "TOPOLOGY_UNREACHABLE"
+  | "UNKNOWN_PASSENGER"
+  | "UNKNOWN_VEHICLE"
+  | "VEHICLE_NOT_IDLE";
+
+export type RecoveryCompletionReasonCode =
+  | "ALL_AFFECTED_PASSENGERS_RECOVERED"
+  | "NO_AFFECTED_PASSENGERS";
+
+export interface ActionRejectedFacts
+  extends Readonly<Record<string, SimulationFactValue>> {
+  readonly controllerId: string;
+  readonly controllerVersion: string;
+  readonly intentKind: "DISPATCH";
+  readonly reasonCode: ActionRejectedReasonCode;
+  readonly vehicleId: string;
+  readonly passengerIds: readonly string[];
+  readonly totalOnboardAfter: number;
+  readonly activeSeatCountAfter: number;
+}
 
 export interface SimulationEvent {
   readonly evidenceId: EvidenceId;
@@ -402,16 +511,131 @@ export interface SimulationEvent {
   readonly facts: Readonly<Record<string, SimulationFactValue>>;
 }
 
+export interface ActionRejectedEvent extends SimulationEvent {
+  readonly type: "ACTION_REJECTED";
+  readonly facts: ActionRejectedFacts;
+}
+
 export interface SimulationSnapshot {
   readonly atSecond: SimulatedSecond;
+  readonly throughEventSequence: Count;
   readonly vehicles: readonly VehicleState[];
   readonly passengerCounts: Readonly<Record<PassengerLifecycleState, Count>>;
   readonly zoneQueueCounts: Readonly<Record<string, Count>>;
+  readonly appliedDisruptionIds: readonly DisruptionId[];
+  readonly recoveryCompletedDisruptionIds: readonly DisruptionId[];
+}
+
+export interface SimulationState {
+  readonly atSecond: SimulatedSecond;
+  readonly nextEventSequence: Count;
+  readonly passengers: readonly PassengerState[];
+  readonly vehicles: readonly VehicleState[];
+  readonly appliedDisruptionIds: readonly DisruptionId[];
+  readonly recoveryCompletedDisruptionIds: readonly DisruptionId[];
+}
+
+export interface ControllerTopologyEdgeV1 {
+  readonly id: EdgeId;
+  readonly fromZoneId: ZoneId;
+  readonly toZoneId: ZoneId;
+  readonly distanceMetres: Metres;
+  readonly travelSeconds: SimulatedSecond;
+  readonly pathZoneIds: readonly ZoneId[];
+}
+
+export interface ControllerTopologyV1 {
+  readonly networkVersion: NetworkVersion;
+  readonly zoneIds: readonly ZoneId[];
+  readonly edges: readonly ControllerTopologyEdgeV1[];
+}
+
+export interface ControllerVehicleObservationV1 {
+  readonly id: VehicleId;
+  readonly state: VehicleOperationalState;
+  readonly currentZoneId: ZoneId;
+  readonly seats: Count;
+  readonly onboardPassengerIds: readonly PassengerId[];
+  readonly reservedPassengerIds: readonly PassengerId[];
+  readonly batteryWh: WattHours;
+  readonly activeLeg?: ActiveLegEvidence;
+  readonly activeBoardingOperation?: ActiveBoardingOperation;
+  readonly failedByDisruptionId?: DisruptionId;
+}
+
+export interface ControllerPassengerObservationV1 {
+  readonly id: PassengerId;
+  readonly arrivalSecond: SimulatedSecond;
+  readonly originZoneId: ZoneId;
+  readonly destinationZoneId: ZoneId;
+  readonly currentZoneId: ZoneId;
+  readonly affectedByDisruptionId?: DisruptionId;
+}
+
+export interface ControllerObservationV1 {
+  readonly observationVersion: "controller-observation-v1";
+  readonly atSecond: SimulatedSecond;
+  readonly vehicles: readonly ControllerVehicleObservationV1[];
+  readonly eligiblePassengers: readonly ControllerPassengerObservationV1[];
+  readonly topology: ControllerTopologyV1;
+  readonly constraints: ScenarioConstraints;
+  readonly fleetParameters: Readonly<
+    Pick<
+      FleetConfiguration,
+      | "batteryCapacityWh"
+      | "dwellSeconds"
+      | "energyWhPerKilometre"
+      | "minimumReserveBasisPoints"
+    >
+  >;
+  readonly activeDisruptionIds: readonly DisruptionId[];
+}
+
+export interface DispatchIntentV1 {
+  readonly intentVersion: "dispatch-intent-v1";
+  readonly kind: "DISPATCH";
+  readonly vehicleId: VehicleId;
+  readonly passengerIds: readonly PassengerId[];
+  readonly originZoneId: ZoneId;
+  readonly destinationZoneId: ZoneId;
+}
+
+export interface DispatchControllerV1 {
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  decide(observation: ControllerObservationV1): readonly DispatchIntentV1[];
+}
+
+export interface SimulationContext {
+  readonly input: StressLabRunInput;
+  readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: typeof STRESS_LAB_ENGINE_VERSION;
+  readonly tickSemanticsVersion: typeof STRESS_LAB_TICK_SEMANTICS_VERSION;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly metricDefinitionVersion: typeof STRESS_LAB_METRIC_DEFINITION_VERSION;
+  readonly eventSchemaVersion: typeof STRESS_LAB_EVENT_SCHEMA_VERSION;
+  readonly resultSchemaVersion: typeof STRESS_LAB_RESULT_SCHEMA_VERSION;
+}
+
+export interface StepResult {
+  readonly state: SimulationState;
+  readonly events: readonly SimulationEvent[];
+  readonly snapshot: SimulationSnapshot;
+}
+
+export interface SimulationTerminalState {
+  readonly atSecond: SimulatedSecond;
+  readonly passengers: readonly PassengerState[];
+  readonly vehicles: readonly VehicleState[];
+  readonly appliedDisruptionIds: readonly DisruptionId[];
+  readonly recoveryCompletedDisruptionIds: readonly DisruptionId[];
 }
 
 export interface MetricSet {
   readonly requestedPassengers: Count;
   readonly servedPassengers: Count;
+  readonly inServiceAtHorizonPassengers: Count;
   readonly unservedPassengers: Count;
   readonly averageWaitSeconds: SimulatedSecond | null;
   readonly p95WaitSeconds: SimulatedSecond | null;
@@ -444,12 +668,75 @@ export interface ConstraintEvaluation {
   readonly evidenceIds: readonly EvidenceId[];
 }
 
+export interface DeterministicSimulationResult {
+  readonly status: "COMPLETED";
+  readonly resultSchemaVersion: typeof STRESS_LAB_RESULT_SCHEMA_VERSION;
+  readonly eventSchemaVersion: typeof STRESS_LAB_EVENT_SCHEMA_VERSION;
+  readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: typeof STRESS_LAB_ENGINE_VERSION;
+  readonly tickSemanticsVersion: typeof STRESS_LAB_TICK_SEMANTICS_VERSION;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly metricDefinitionVersion: typeof STRESS_LAB_METRIC_DEFINITION_VERSION;
+  readonly events: readonly SimulationEvent[];
+  readonly snapshots: readonly SimulationSnapshot[];
+  readonly terminalState: SimulationTerminalState;
+  readonly metrics: MetricSet;
+  readonly constraints: readonly ConstraintEvaluation[];
+  readonly eventLedgerFingerprint: Fingerprint;
+  readonly canonicalResultJson: string;
+  readonly resultFingerprint: Fingerprint;
+}
+
+export interface EventLedgerEnvelope {
+  readonly eventSchemaVersion: typeof STRESS_LAB_EVENT_SCHEMA_VERSION;
+  readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: typeof STRESS_LAB_ENGINE_VERSION;
+  readonly tickSemanticsVersion: typeof STRESS_LAB_TICK_SEMANTICS_VERSION;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly events: readonly SimulationEvent[];
+  readonly fingerprint: Fingerprint;
+}
+
+export interface RunResultArtifact {
+  readonly resultSchemaVersion: typeof STRESS_LAB_RESULT_SCHEMA_VERSION;
+  readonly eventSchemaVersion: typeof STRESS_LAB_EVENT_SCHEMA_VERSION;
+  readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: typeof STRESS_LAB_ENGINE_VERSION;
+  readonly tickSemanticsVersion: typeof STRESS_LAB_TICK_SEMANTICS_VERSION;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly metricDefinitionVersion: typeof STRESS_LAB_METRIC_DEFINITION_VERSION;
+  readonly eventLedgerFingerprint: Fingerprint;
+  readonly snapshots: readonly SimulationSnapshot[];
+  readonly terminalState: SimulationTerminalState;
+  readonly metrics: MetricSet;
+  readonly constraints: readonly ConstraintEvaluation[];
+  readonly canonicalResultJson: string;
+  readonly resultFingerprint: Fingerprint;
+}
+
+declare const verifiedRunResultBrand: unique symbol;
+
+export type VerifiedRunResultArtifact = RunResultArtifact & {
+  readonly [verifiedRunResultBrand]: true;
+};
+
 export interface RunArtifact {
   readonly id: RunId;
   readonly scenarioRevisionId: ScenarioRevisionId;
   readonly scenarioSlot: ScenarioSlot;
   readonly status: "COMPLETED" | "CANCELLED" | "FAILED";
   readonly inputFingerprint: Fingerprint;
+  readonly engineVersion: typeof STRESS_LAB_ENGINE_VERSION;
+  readonly tickSemanticsVersion: typeof STRESS_LAB_TICK_SEMANTICS_VERSION;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly metricDefinitionVersion: typeof STRESS_LAB_METRIC_DEFINITION_VERSION;
+  readonly eventSchemaVersion: typeof STRESS_LAB_EVENT_SCHEMA_VERSION;
+  readonly resultSchemaVersion: typeof STRESS_LAB_RESULT_SCHEMA_VERSION;
+  readonly eventLedgerFingerprint?: Fingerprint;
   readonly resultFingerprint?: Fingerprint;
   readonly events: readonly SimulationEvent[];
   readonly snapshots: readonly SimulationSnapshot[];
@@ -510,5 +797,34 @@ export class StressLabInputValidationError extends Error {
     super(message);
     this.name = "StressLabInputValidationError";
     this.code = code;
+  }
+}
+
+export class StressLabEngineInvariantError extends Error {
+  readonly code = "ENGINE_INVARIANT_FAILED" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "StressLabEngineInvariantError";
+  }
+}
+
+export class StressLabArtifactVerificationError extends Error {
+  readonly code = "ARTIFACT_VERIFICATION_FAILED" as const;
+  readonly path: string;
+
+  constructor(path: string, message: string) {
+    super(`ARTIFACT_VERIFICATION_FAILED at ${path}: ${message}`);
+    this.name = "StressLabArtifactVerificationError";
+    this.path = path;
+  }
+}
+
+export class StressLabSimulationCancelledError extends Error {
+  readonly code = "OPERATION_CANCELLED" as const;
+
+  constructor() {
+    super("The deterministic simulation was cancelled before completion.");
+    this.name = "StressLabSimulationCancelledError";
   }
 }

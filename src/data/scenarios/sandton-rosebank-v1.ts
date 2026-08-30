@@ -23,6 +23,7 @@ import {
   STRESS_LAB_FINGERPRINT_VERSION,
   STRESS_LAB_INPUT_SCHEMA_VERSION,
   STRESS_LAB_METRIC_DEFINITION_VERSION,
+  STRESS_LAB_NETWORK_SCHEMA_VERSION,
   STRESS_LAB_NETWORK_VERSION,
   STRESS_LAB_PRESET_VERSION,
   StressLabInputValidationError,
@@ -95,7 +96,7 @@ function edge(
 }
 
 export const SANDTON_ROSEBANK_V1_NETWORK: NetworkFixture = deepFreeze({
-  inputSchemaVersion: STRESS_LAB_INPUT_SCHEMA_VERSION,
+  inputSchemaVersion: STRESS_LAB_NETWORK_SCHEMA_VERSION,
   networkVersion: STRESS_LAB_NETWORK_VERSION,
   zones: [
     {
@@ -318,7 +319,7 @@ function disruption(slot: ScenarioSlot) {
   });
 }
 
-export const MORNING_PEAK_RESILIENCE_V1: GoldenExperimentPreset = deepFreeze({
+export const MORNING_PEAK_RESILIENCE_V2: GoldenExperimentPreset = deepFreeze({
   inputSchemaVersion: STRESS_LAB_INPUT_SCHEMA_VERSION,
   presetVersion: STRESS_LAB_PRESET_VERSION,
   engineVersion: STRESS_LAB_ENGINE_VERSION,
@@ -327,6 +328,7 @@ export const MORNING_PEAK_RESILIENCE_V1: GoldenExperimentPreset = deepFreeze({
   fingerprintVersion: STRESS_LAB_FINGERPRINT_VERSION,
   networkVersion: STRESS_LAB_NETWORK_VERSION,
   horizon: GOLDEN_HORIZON,
+  terminalEvaluationSecond: simulatedSecond(1_980),
   seed: seed(7),
   demand: {
     generatorVersion: STRESS_LAB_DEMAND_GENERATOR_VERSION,
@@ -419,12 +421,12 @@ export const MORNING_PEAK_RESILIENCE_V1: GoldenExperimentPreset = deepFreeze({
 export const SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT =
   computeNetworkFixtureFingerprint(SANDTON_ROSEBANK_V1_NETWORK);
 
-export const MORNING_PEAK_RESILIENCE_V1_FINGERPRINT = fingerprintCanonical(
+export const MORNING_PEAK_RESILIENCE_V2_FINGERPRINT = fingerprintCanonical(
   "EXPERIMENT_PRESET",
-  MORNING_PEAK_RESILIENCE_V1,
+  MORNING_PEAK_RESILIENCE_V2,
 );
 
-export const LOCKED_GATE_3_FINGERPRINTS = deepFreeze({
+export const LOCKED_V1_FINGERPRINTS = deepFreeze({
   network: fingerprint(
     "sha256-v1:ff982fc42bc6ae8bb6d1f110a44925e392f2f44e2ebbdf9f0f8054080d4df5d0",
   ),
@@ -473,14 +475,14 @@ function reachable(
 export function validateSandtonRosebankV1(): ValidationResult {
   const issues: ValidationIssue[] = [];
   const network = SANDTON_ROSEBANK_V1_NETWORK;
-  const preset = MORNING_PEAK_RESILIENCE_V1;
+  const preset = MORNING_PEAK_RESILIENCE_V2;
   const zoneIds = network.zones.map((zone) => zone.id);
   const edgeIds = network.edges.map((edgeValue) => edgeValue.id);
   const zoneIdSet = new Set(zoneIds);
 
   if (
     SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT !==
-    LOCKED_GATE_3_FINGERPRINTS.network
+    LOCKED_V1_FINGERPRINTS.network
   ) {
     issues.push(
       issue(
@@ -490,19 +492,6 @@ export function validateSandtonRosebankV1(): ValidationResult {
       ),
     );
   }
-  if (
-    MORNING_PEAK_RESILIENCE_V1_FINGERPRINT !==
-    LOCKED_GATE_3_FINGERPRINTS.preset
-  ) {
-    issues.push(
-      issue(
-        "PRESET_FINGERPRINT_DRIFT",
-        "preset",
-        "Experiment preset changed without an explicit version and fingerprint update.",
-      ),
-    );
-  }
-
   if (network.zones.length < 4 || network.zones.length > 6) {
     issues.push(issue("ZONE_COUNT", "network.zones", "Network must contain 4–6 zones."));
   }
@@ -740,24 +729,26 @@ function runInput(
     metricDefinitionVersion: STRESS_LAB_METRIC_DEFINITION_VERSION,
     presetVersion: STRESS_LAB_PRESET_VERSION,
     scenarioSlot: slot,
-    horizon: MORNING_PEAK_RESILIENCE_V1.horizon,
-    seed: MORNING_PEAK_RESILIENCE_V1.seed,
+    horizon: MORNING_PEAK_RESILIENCE_V2.horizon,
+    terminalEvaluationSecond: MORNING_PEAK_RESILIENCE_V2.terminalEvaluationSecond,
+    seed: MORNING_PEAK_RESILIENCE_V2.seed,
+    networkVersion: SANDTON_ROSEBANK_V1_NETWORK.networkVersion,
     network: SANDTON_ROSEBANK_V1_NETWORK,
     networkFingerprint: SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
-    demandDefinition: MORNING_PEAK_RESILIENCE_V1.demand,
+    demandDefinition: MORNING_PEAK_RESILIENCE_V2.demand,
     demandTrace: sharedDemandTrace,
-    scenario: MORNING_PEAK_RESILIENCE_V1.scenarios[slot],
-    disruptions: MORNING_PEAK_RESILIENCE_V1.disruptions[slot],
+    scenario: MORNING_PEAK_RESILIENCE_V2.scenarios[slot],
+    disruptions: MORNING_PEAK_RESILIENCE_V2.disruptions[slot],
   });
 }
 
 export function createGoldenExperimentInputs(): PreparedGoldenExperimentInputs {
   assertSandtonRosebankV1Valid();
   const sharedDemandTrace = generateDemandTrace({
-    definition: MORNING_PEAK_RESILIENCE_V1.demand,
-    horizon: MORNING_PEAK_RESILIENCE_V1.horizon,
+    definition: MORNING_PEAK_RESILIENCE_V2.demand,
+    horizon: MORNING_PEAK_RESILIENCE_V2.horizon,
     network: SANDTON_ROSEBANK_V1_NETWORK,
-    seed: MORNING_PEAK_RESILIENCE_V1.seed,
+    seed: MORNING_PEAK_RESILIENCE_V2.seed,
   });
   const runs = deepFreeze({
     A: prepareStressLabRunInput(runInput("A", sharedDemandTrace)),
@@ -765,33 +756,25 @@ export function createGoldenExperimentInputs(): PreparedGoldenExperimentInputs {
   });
   const preparedManifest = prepareGoldenExperimentManifest({
     networkFingerprint: SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
-    presetFingerprint: MORNING_PEAK_RESILIENCE_V1_FINGERPRINT,
+    presetFingerprint: MORNING_PEAK_RESILIENCE_V2_FINGERPRINT,
     demandFingerprint: sharedDemandTrace.fingerprint,
-    seed: MORNING_PEAK_RESILIENCE_V1.seed,
+    seed: MORNING_PEAK_RESILIENCE_V2.seed,
     runInputFingerprints: {
       A: runs.A.fingerprint,
       B: runs.B.fingerprint,
     },
   });
 
-  const currentFingerprints = {
-    demand: sharedDemandTrace.fingerprint,
-    runA: runs.A.fingerprint,
-    runB: runs.B.fingerprint,
-    manifest: preparedManifest.fingerprint,
-  };
-  for (const key of ["demand", "runA", "runB", "manifest"] as const) {
-    if (currentFingerprints[key] !== LOCKED_GATE_3_FINGERPRINTS[key]) {
-      throw new StressLabInputValidationError(
-        "GATE_3_FINGERPRINT_DRIFT",
-        `${key} content changed without an explicit version and fingerprint update.`,
-      );
-    }
+  if (sharedDemandTrace.fingerprint !== LOCKED_V1_FINGERPRINTS.demand) {
+    throw new StressLabInputValidationError(
+      "V1_DEMAND_FINGERPRINT_DRIFT",
+      "Seed-07 demand changed while migrating additive v2 run semantics.",
+    );
   }
 
   return deepFreeze({
     networkFingerprint: SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
-    presetFingerprint: MORNING_PEAK_RESILIENCE_V1_FINGERPRINT,
+    presetFingerprint: MORNING_PEAK_RESILIENCE_V2_FINGERPRINT,
     sharedDemandTrace,
     runs,
     manifest: preparedManifest.manifest,

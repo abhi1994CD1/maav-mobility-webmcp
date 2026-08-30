@@ -104,9 +104,9 @@ or manually chosen to create a dramatic outcome.
   the same normalized ledger, metrics, and fingerprints.
 - Stable ordering and explicit tie-breaks are required for simultaneous events,
   vehicles, passengers, and routes.
-- Passenger conservation must hold:
-  `requested = waiting + onboard + served`; horizon-end reporting must also
-  reconcile unserved passengers.
+- Passenger lifecycle conservation must include every exclusive state; terminal
+  reporting must satisfy
+  `requested = served + inServiceAtHorizon + unserved`.
 - Vehicles never exceed capacity, serve passengers before arrival, use negative
   energy, or accept a leg that would end below the configured reserve.
 - LLMs, Google data, animation frames, playback speed, map interactions, and

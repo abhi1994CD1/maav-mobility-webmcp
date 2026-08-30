@@ -2,18 +2,12 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createGoldenExperimentInputs } from "@/data/scenarios/sandton-rosebank-v1";
-import {
-  fingerprintRunEvidence,
-  sha256Hex,
-} from "@/domain/stress-lab/fingerprint";
+import { sha256Hex } from "@/domain/stress-lab/fingerprint";
 import {
   prepareStressLabRunInput,
   validateStressLabRunInput,
 } from "@/domain/stress-lab/run-input";
-import type {
-  RunArtifact,
-  StressLabRunInput,
-} from "@/domain/stress-lab/types";
+import type { StressLabRunInput } from "@/domain/stress-lab/types";
 
 function cloneRunInput(input: StressLabRunInput): StressLabRunInput {
   return JSON.parse(JSON.stringify(input)) as StressLabRunInput;
@@ -31,14 +25,16 @@ describe("Gate 3 complete experiment inputs", () => {
       issues: [],
     });
     expect(prepared.runs.A.input).toMatchObject({
-      inputSchemaVersion: "stress-lab-input-schema-v1",
+      inputSchemaVersion: "run-input-schema-v2",
       canonicalizationVersion: "canonical-json-v1",
       fingerprintVersion: "sha256-v1",
-      engineVersion: "maav-sim-v1",
-      metricDefinitionVersion: "stress-lab-metrics-v1",
-      presetVersion: "morning-peak-resilience-v1",
+      engineVersion: "maav-sim-v2",
+      metricDefinitionVersion: "stress-lab-metrics-v2",
+      presetVersion: "morning-peak-resilience-v2",
       scenarioSlot: "A",
       seed: 7,
+      terminalEvaluationSecond: 1_980,
+      networkVersion: "sandton-rosebank-v1",
       network: { networkVersion: "sandton-rosebank-v1" },
       demandDefinition: { generatorVersion: "demand-v1", requestCount: 120 },
       demandTrace: { generatorVersion: "demand-v1", seed: 7 },
@@ -109,56 +105,6 @@ describe("Gate 3 complete experiment inputs", () => {
     expect(changedPrepared.fingerprint).not.toBe(prepared.runs.A.fingerprint);
   });
 
-  it("excludes run, operation, wall-clock, browser, and map identity from result evidence", () => {
-    const common = {
-      scenarioRevisionId: "scenario-A-r1",
-      scenarioSlot: "A",
-      status: "COMPLETED",
-      inputFingerprint:
-        "sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      events: [],
-      snapshots: [],
-      metrics: {
-        requestedPassengers: 0,
-        servedPassengers: 0,
-        unservedPassengers: 0,
-        averageWaitSeconds: null,
-        p95WaitSeconds: null,
-        maximumWaitSeconds: 0,
-        onTimeBasisPoints: null,
-        peakOccupancyBasisPoints: null,
-        passengerMetres: 0,
-        vehicleMetres: 0,
-        emptyVehicleMetres: 0,
-        utilizationBasisPoints: null,
-        totalEnergyWh: 0,
-        energyWhPerPassengerKilometre: null,
-        minimumBatteryBasisPoints: null,
-        reserveViolations: 0,
-        reserveBlockedAssignments: 0,
-        recoveryTimeSeconds: null,
-      },
-      constraints: [],
-    } as unknown as Omit<RunArtifact, "id">;
-    const first = {
-      ...common,
-      id: "run-A-001",
-      operationId: "operation-one",
-      wallClockStartedAt: "2026-08-30T08:00:00Z",
-      browserVersion: "Chrome 150",
-      mapStatus: "READY",
-    } as unknown as RunArtifact;
-    const second = {
-      ...common,
-      id: "run-A-999",
-      operationId: "operation-two",
-      wallClockStartedAt: "2030-01-01T00:00:00Z",
-      browserVersion: "Another runtime",
-      mapStatus: "UNAVAILABLE",
-    } as unknown as RunArtifact;
-    expect(fingerprintRunEvidence(first)).toBe(fingerprintRunEvidence(second));
-  });
-
   it("locks the byte-level golden experiment manifest", () => {
     const prepared = createGoldenExperimentInputs();
     expect({
@@ -170,11 +116,11 @@ describe("Gate 3 complete experiment inputs", () => {
       demand:
         "sha256-v1:f7fd7e72e6ba7befe1b3eb578e20387b89a9b7a274c67b65ddebdfd62ee22302",
       runA:
-        "sha256-v1:7a8b2f3ba0032d630d6fcac32a295a0fd94a832cea1a41a27b464b70a886af57",
+        "sha256-v1:5156b1558d9767d60d1d050df868adb54b8075a0681ccea50dad07071b64afae",
       runB:
-        "sha256-v1:fac59cb8142eb2a01912876b166e46adc3b9f9dd77473cff2342e0e7e06ce24b",
+        "sha256-v1:e1e6b94a79218c817ac346922309f87f35755bbd3721142d68db58b67111d80c",
       manifest:
-        "sha256-v1:b23227b7bcec16c2e2849bb68a4c3749738c07749fef041db559749b5e281b06",
+        "sha256-v1:a526424f1146f9326ee13909de9ce5e0c37d878a659aa9d9536fa8ae41c31548",
     });
   });
 

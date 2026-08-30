@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  MORNING_PEAK_RESILIENCE_V1,
-  MORNING_PEAK_RESILIENCE_V1_FINGERPRINT,
+  MORNING_PEAK_RESILIENCE_V2,
+  MORNING_PEAK_RESILIENCE_V2_FINGERPRINT,
   SANDTON_ROSEBANK_V1_NETWORK,
   SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
   assertSandtonRosebankV1Valid,
@@ -44,12 +44,12 @@ describe("Gate 3 sandton-rosebank-v1 fixture", () => {
   });
 
   it("locks the exact H0 golden experiment without final KPI constants", () => {
-    const preset = MORNING_PEAK_RESILIENCE_V1;
+    const preset = MORNING_PEAK_RESILIENCE_V2;
     expect(preset).toMatchObject({
-      presetVersion: "morning-peak-resilience-v1",
+      presetVersion: "morning-peak-resilience-v2",
       networkVersion: "sandton-rosebank-v1",
-      engineVersion: "maav-sim-v1",
-      metricDefinitionVersion: "stress-lab-metrics-v1",
+      engineVersion: "maav-sim-v2",
+      metricDefinitionVersion: "stress-lab-metrics-v2",
       seed: 7,
       horizon: {
         displayStart: "08:30:00",
@@ -102,12 +102,12 @@ describe("Gate 3 sandton-rosebank-v1 fixture", () => {
   it("locks the authored network and experiment-preset fingerprints", () => {
     expect({
       network: SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
-      preset: MORNING_PEAK_RESILIENCE_V1_FINGERPRINT,
+      preset: MORNING_PEAK_RESILIENCE_V2_FINGERPRINT,
     }).toEqual({
       network:
         "sha256-v1:ff982fc42bc6ae8bb6d1f110a44925e392f2f44e2ebbdf9f0f8054080d4df5d0",
       preset:
-        "sha256-v1:6e36281c791eb11af7aaae46fa32a67e5fd637c950cff28f6955c673c36d763e",
+        "sha256-v1:a79212caf3b4ea6b30a34ab995b6b6b78db519187dcae5beca4b96893f7af3ea",
     });
   });
 
@@ -117,7 +117,7 @@ describe("Gate 3 sandton-rosebank-v1 fixture", () => {
     expect(Object.isFrozen(SANDTON_ROSEBANK_V1_NETWORK.edges[0].displayPath)).toBe(
       true,
     );
-    expect(Object.isFrozen(MORNING_PEAK_RESILIENCE_V1.scenarios.A.fleet)).toBe(
+    expect(Object.isFrozen(MORNING_PEAK_RESILIENCE_V2.scenarios.A.fleet)).toBe(
       true,
     );
   });

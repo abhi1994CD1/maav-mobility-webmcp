@@ -61,14 +61,16 @@ React UI / WebMCP / Google adapters
 
 ## Google context and fallback
 
-With keys configured, the UI uses Google Maps JavaScript API and `AdvancedMarkerElement`, while a narrow server route calls Google Routes API for normalized distance/duration context.
+With both services configured, the UI uses Google Maps JavaScript API and `AdvancedMarkerElement`, while a narrow server route requests traffic-aware duration, static duration, distance, and encoded geometry for the fixed Rosebank-Sandton segment. The real road-shaped segment is shown prominently above the subdued authored North Spine.
 
-Without keys—or when Routes is unavailable—the app uses a clearly labelled authored map and route-context fallback. The entire golden workflow remains functional and selects the same winning plan because Google data never participates in canonical hard constraints or scoring.
+The North Spine, fleet, passengers, incident, and operational status remain authored simulated truth. Google route data is an ephemeral session snapshot—not a continuous traffic feed—and is never persisted or used for hard constraints, scoring, plan ranking, approval, audit, or rollback. Without keys—or when Routes is unavailable—the app uses a clearly labelled authored map and route fallback. The entire golden workflow remains functional and selects the same winning plan.
 
-Copy `.env.example` to `.env.local` to enable Google enrichment:
+Use an uncommitted `.env.local` to enable Google enrichment:
 
 ```bash
-cp .env.example .env.local
+NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
+NEXT_PUBLIC_GOOGLE_MAP_ID=
+GOOGLE_ROUTES_API_KEY=
 ```
 
 Use separate restricted keys:
@@ -92,7 +94,7 @@ pnpm install
 pnpm dev
 ```
 
-Open `http://127.0.0.1:3000`. The app remains fully demonstrable with manual fallback controls when WebMCP or Google APIs are unavailable.
+Open exactly `http://localhost:3000`. The app remains fully demonstrable with manual fallback controls when WebMCP or Google APIs are unavailable.
 
 ## Verification
 

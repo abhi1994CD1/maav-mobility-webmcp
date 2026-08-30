@@ -357,11 +357,95 @@ button:focus-visible {
 .google-map-layer {
   z-index: 2;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 500ms ease;
 }
 
 .google-map-layer.is-ready {
   opacity: 1;
+  pointer-events: auto;
+}
+
+.google-vehicle-marker {
+  min-width: 34px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--cyan);
+  border-radius: 5px;
+  background: #071015;
+  color: #dff9ff;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 36%);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  animation: vehicle-arrive 500ms ease both;
+}
+
+.google-vehicle-marker.status-delayed {
+  border-color: var(--red);
+  color: #ffd1cd;
+}
+
+.google-vehicle-marker.status-rerouted,
+.google-vehicle-marker.status-bridge_service {
+  border-color: var(--green);
+  color: #c5f7e6;
+}
+
+.map-load-note {
+  position: absolute;
+  z-index: 4;
+  right: 16px;
+  bottom: 48px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line));
+  background: rgb(24 17 7 / 90%);
+  color: #e8bd7f;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.09em;
+}
+
+.map-load-note.with-traffic-summary {
+  bottom: 108px;
+}
+
+.map-traffic-summary {
+  position: absolute;
+  z-index: 4;
+  right: 16px;
+  bottom: 50px;
+  display: grid;
+  gap: 2px;
+  min-width: 238px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-bright);
+  border-left: 2px solid var(--green);
+  background: rgb(6 15 19 / 90%);
+  color: #b9c9cc;
+  font-family: var(--font-mono);
+  pointer-events: none;
+}
+
+.map-traffic-summary small,
+.map-traffic-summary span {
+  color: #779196;
+  font-size: 7px;
+  letter-spacing: 0.1em;
+}
+
+.map-traffic-summary strong {
+  color: #d9e7e9;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.map-traffic-summary b {
+  color: var(--green);
 }
 
 .map-context-label {
@@ -461,6 +545,17 @@ button:focus-visible {
   width: 18px;
   height: 2px;
   background: var(--cyan);
+}
+
+.legend-line.backbone {
+  height: 1px;
+  background: #68858d;
+  opacity: 0.75;
+}
+
+.legend-line.google-route {
+  height: 4px;
+  border-radius: 2px;
 }
 
 .legend-vehicle {

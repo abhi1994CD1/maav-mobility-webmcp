@@ -561,29 +561,59 @@ network-unknown evidence, or false replay snapshots semantically trustworthy.
 
 ## Comparison compatibility
 
-Before authoritative deltas, require:
+The headless comparison boundary accepts only validated prepared inputs and
+runtime-attested `VerifiedRunResultArtifact` values. A raw engine result, copied
+artifact, TypeScript cast, or correctly formatted hash is not trusted. Persisted
+or transported evidence must be reverified by the Gate 4 trust boundary.
 
-- explicit completed current run A and run B;
-- matching engine, network, metric, demand, seed, horizon, and tick versions;
-- equivalent vehicle-failure type, time, and target-selection policy;
-- disclosed fleet configuration differences.
+Before any delta, require identical network content and fingerprint, demand
+definition/trace and fingerprint, seed, intake/evaluation horizon, canonical
+and input versions, engine/tick/controller/metric/event/result contracts, hard
+constraints, non-size fleet and energy assumptions, objectives, and semantic
+vehicle-failure schedule. Scenario slot and label, vehicle count, seats per
+vehicle, and the scenario-local disruption ID are the fixed H0 permitted
+dimensions. Every actual permitted difference is recorded. Any undeclared
+difference fails closed as `INCOMPARABLE_RUNS` with an exact mismatch path and
+left/right values.
 
-Incompatible artifacts may be inspected but produce no authoritative deltas,
-winner, evidence hash, or finding.
+Each of the 19 published H0 KPIs records left value, right value, unit, and the
+signed convention:
 
-## Finding evidence
+```text
+rightMinusLeft = right value - left value
+```
 
-The deterministic finding builder selects at most three high-information claims
-from a current compatible comparison:
+Relative differences are integer basis points rounded deterministically. They
+are `N/A` when either value is unavailable or the left denominator is zero;
+`NaN` and infinity are never representable evidence. Constraint transitions
+are explicit: `BOTH_PASS`, `BOTH_FAIL`, `LEFT_PASS_RIGHT_FAIL`, and
+`LEFT_FAIL_RIGHT_PASS`. No direction is converted into a winner score or
+hidden preference.
 
-1. hard-constraint difference;
-2. material service or recovery difference relevant to bounded emphasis;
-3. material energy or utilization trade-off.
+The complete `comparison-schema-v1` evidence document includes operand input,
+ledger, and result fingerprints, shared provenance, permitted differences,
+metric deltas, constraint evidence, and bounded claims. It is canonically
+serialized under the `RUN_COMPARISON_EVIDENCE` domain and SHA-256 fingerprinted.
+Swapping operands creates a different valid document with reversed signed
+absolute deltas. Map state, animation, browser state, operation IDs, wall-clock
+time, and agent prose cannot enter the identity.
 
-Each claim stores a code, metric keys, exact A/B/delta values, evidence IDs, and
-template version. The agent may choose bounded emphasis and outcome framing,
-but it may not submit numeric claims. Agent prose is never authoritative
-evidence.
+## Bounded comparison claims
+
+Gate 5 emits at most three neutral structured claims from a verified comparison:
+
+1. the first constraint transition, preferring a differing status and then a
+   shared failure;
+2. the unserved-passenger delta;
+3. the total-energy delta.
+
+Each claim stores a bounded code, subject identifier, exact left/right/delta
+values, unit, relation, constraint transition when applicable, evidence IDs,
+and the relevant input/ledger/result fingerprints. The fixed template version
+is part of the comparison identity. Claims contain no free-form prose and make
+no optimality or winner assertion. A later renderer or browser agent may explain
+them, but that explanation cannot modify trusted evidence. Finding staging and
+human review remain later application gates.
 
 ## Cancellation and atomic commit
 

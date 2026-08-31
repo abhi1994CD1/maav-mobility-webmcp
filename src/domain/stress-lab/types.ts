@@ -55,6 +55,10 @@ export const STRESS_LAB_DISRUPTION_POLICY_VERSION =
 export const STRESS_LAB_EVENT_SCHEMA_VERSION = "event-schema-v2" as const;
 export const STRESS_LAB_RESULT_SCHEMA_VERSION =
   "simulation-result-schema-v2" as const;
+export const STRESS_LAB_COMPARISON_SCHEMA_VERSION =
+  "comparison-schema-v1" as const;
+export const STRESS_LAB_COMPARISON_CLAIM_TEMPLATE_VERSION =
+  "bounded-comparison-claims-v1" as const;
 
 const STABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const FINGERPRINT_PATTERN = /^sha256-v1:[0-9a-f]{64}$/u;
@@ -744,30 +748,167 @@ export interface RunArtifact {
   readonly constraints?: readonly ConstraintEvaluation[];
 }
 
-export interface MetricDelta {
-  readonly metricKey: keyof MetricSet;
-  readonly a: number | null;
-  readonly b: number | null;
-  readonly absoluteDelta: number | null;
-  readonly percentageDeltaBasisPoints: SignedBasisPoints | null;
+export type ComparisonMetricKey = keyof MetricSet;
+
+export type ComparisonNumericUnit =
+  | "PASSENGERS"
+  | "SECONDS"
+  | "BASIS_POINTS"
+  | "METRES"
+  | "WATT_HOURS"
+  | "WATT_HOURS_PER_PASSENGER_KILOMETRE"
+  | "COUNT";
+
+export type ComparisonRelation = "RIGHT_HIGHER" | "RIGHT_LOWER" | "EQUAL";
+
+export type RelativeDeltaStatus =
+  | "DEFINED"
+  | "LEFT_ZERO_DENOMINATOR"
+  | "NOT_APPLICABLE";
+
+export interface ComparisonEvidenceReference {
+  readonly inputFingerprint: Fingerprint;
+  readonly eventLedgerFingerprint: Fingerprint;
+  readonly resultFingerprint: Fingerprint;
+  readonly evidenceIds: readonly EvidenceId[];
 }
 
-export interface ComparisonArtifact {
-  readonly id: ComparisonId;
-  readonly runAId: RunId;
-  readonly runBId: RunId;
-  readonly compatibility: "COMPARABLE" | "INCOMPARABLE";
-  readonly compatibilityReasons: readonly string[];
-  readonly metricDeltas?: readonly MetricDelta[];
-  readonly evidenceHash?: Fingerprint;
+export interface MetricDelta {
+  readonly metricKey: ComparisonMetricKey;
+  readonly unit: ComparisonNumericUnit;
+  readonly leftValue: number | null;
+  readonly rightValue: number | null;
+  readonly rightMinusLeft: number | null;
+  readonly relation: ComparisonRelation | "NOT_APPLICABLE";
+  readonly relativeDeltaBasisPoints: number | null;
+  readonly relativeDeltaStatus: RelativeDeltaStatus;
+  readonly leftEvidence: ComparisonEvidenceReference;
+  readonly rightEvidence: ComparisonEvidenceReference;
+}
+
+export type ConstraintTransition =
+  | "BOTH_PASS"
+  | "BOTH_FAIL"
+  | "LEFT_PASS_RIGHT_FAIL"
+  | "LEFT_FAIL_RIGHT_PASS";
+
+export interface ComparedConstraintSide {
+  readonly passed: boolean;
+  readonly observed: number | null;
+  readonly threshold: number | null;
+  readonly evidence: ComparisonEvidenceReference;
+}
+
+export interface ConstraintComparison {
+  readonly constraintCode: ConstraintEvaluation["code"];
+  readonly unit: ConstraintEvaluation["unit"];
+  readonly left: ComparedConstraintSide;
+  readonly right: ComparedConstraintSide;
+  readonly rightMinusLeft: number | null;
+  readonly relation: ComparisonRelation | "NOT_APPLICABLE";
+  readonly transition: ConstraintTransition;
+  readonly evidenceDiffers: boolean;
+}
+
+export type PermittedScenarioDifference =
+  | {
+      readonly path:
+        | "scenario.slot"
+        | "scenario.label"
+        | "disruptions[].id";
+      readonly kind: "SCENARIO_IDENTITY";
+      readonly leftValue: string;
+      readonly rightValue: string;
+    }
+  | {
+      readonly path:
+        | "scenario.fleet.vehicleCount"
+        | "scenario.fleet.seatsPerVehicle";
+      readonly kind: "FLEET_CONFIGURATION";
+      readonly unit: "VEHICLES" | "SEATS_PER_VEHICLE";
+      readonly leftValue: number;
+      readonly rightValue: number;
+      readonly rightMinusLeft: number;
+    };
+
+export interface ComparisonScenarioIdentity {
+  readonly slot: ScenarioSlot;
+  readonly label: string;
+  readonly inputFingerprint: Fingerprint;
+  readonly eventLedgerFingerprint: Fingerprint;
+  readonly resultFingerprint: Fingerprint;
+}
+
+export interface SharedComparisonProvenance {
+  readonly inputSchemaVersion: typeof STRESS_LAB_INPUT_SCHEMA_VERSION;
+  readonly presetVersion: typeof STRESS_LAB_PRESET_VERSION;
+  readonly canonicalizationVersion: typeof STRESS_LAB_CANONICALIZATION_VERSION;
+  readonly fingerprintVersion: typeof STRESS_LAB_FINGERPRINT_VERSION;
+  readonly networkVersion: NetworkVersion;
+  readonly networkFingerprint: Fingerprint;
+  readonly demandGeneratorVersion: typeof STRESS_LAB_DEMAND_GENERATOR_VERSION;
+  readonly demandFingerprint: Fingerprint;
+  readonly seed: Seed;
+  readonly horizon: SimulationHorizon;
+  readonly terminalEvaluationSecond: SimulatedSecond;
+  readonly engineVersion: typeof STRESS_LAB_ENGINE_VERSION;
+  readonly tickSemanticsVersion: typeof STRESS_LAB_TICK_SEMANTICS_VERSION;
+  readonly controllerId: ControllerId;
+  readonly controllerVersion: ControllerVersion;
+  readonly metricDefinitionVersion: typeof STRESS_LAB_METRIC_DEFINITION_VERSION;
+  readonly eventSchemaVersion: typeof STRESS_LAB_EVENT_SCHEMA_VERSION;
+  readonly resultSchemaVersion: typeof STRESS_LAB_RESULT_SCHEMA_VERSION;
+  readonly hardConstraints: ScenarioConstraints;
+  readonly operationalAssumptions: Readonly<
+    Omit<FleetConfiguration, "vehicleCount" | "seatsPerVehicle">
+  >;
+  readonly objectives: readonly ScenarioObjective[];
+  readonly disruptionPolicy: readonly {
+    readonly type: DisruptionSpecification["type"];
+    readonly atSecond: SimulatedSecond;
+    readonly target: DeterministicVehicleFailureTarget;
+    readonly recoveryTransferSeconds: SimulatedSecond;
+  }[];
 }
 
 export interface EvidenceClaim {
-  readonly claimCode: string;
-  readonly metricKeys: readonly (keyof MetricSet)[];
-  readonly evidenceIds: readonly EvidenceId[];
-  readonly values: Readonly<Record<"A" | "B" | "delta", number | null>>;
+  readonly claimCode:
+    | "CONSTRAINT_STATUS"
+    | "SERVICE_METRIC_DELTA"
+    | "ENERGY_METRIC_DELTA";
+  readonly subjectKind: "CONSTRAINT" | "METRIC";
+  readonly subjectId: ConstraintEvaluation["code"] | ComparisonMetricKey;
+  readonly unit: ComparisonNumericUnit | ConstraintEvaluation["unit"];
+  readonly leftValue: number | null;
+  readonly rightValue: number | null;
+  readonly rightMinusLeft: number | null;
+  readonly relation: ComparisonRelation | "NOT_APPLICABLE";
+  readonly constraintTransition: ConstraintTransition | null;
+  readonly leftEvidence: ComparisonEvidenceReference;
+  readonly rightEvidence: ComparisonEvidenceReference;
 }
+
+export interface ComparisonArtifact {
+  readonly comparisonSchemaVersion: typeof STRESS_LAB_COMPARISON_SCHEMA_VERSION;
+  readonly claimTemplateVersion: typeof STRESS_LAB_COMPARISON_CLAIM_TEMPLATE_VERSION;
+  readonly compatibility: "COMPARABLE";
+  readonly deltaConvention: "RIGHT_MINUS_LEFT";
+  readonly left: ComparisonScenarioIdentity;
+  readonly right: ComparisonScenarioIdentity;
+  readonly sharedProvenance: SharedComparisonProvenance;
+  readonly permittedScenarioDifferences: readonly PermittedScenarioDifference[];
+  readonly metricDeltas: readonly MetricDelta[];
+  readonly constraintComparisons: readonly ConstraintComparison[];
+  readonly claims: readonly EvidenceClaim[];
+  readonly canonicalComparisonJson: string;
+  readonly comparisonFingerprint: Fingerprint;
+}
+
+declare const trustedComparisonArtifactBrand: unique symbol;
+
+export type TrustedComparisonArtifact = ComparisonArtifact & {
+  readonly [trustedComparisonArtifactBrand]: true;
+};
 
 export interface FindingArtifact {
   readonly id: FindingId;
@@ -777,6 +918,40 @@ export interface FindingArtifact {
   readonly emphasis: "BALANCED" | "SERVICE" | "ENERGY" | "RESILIENCE";
   readonly claims: readonly EvidenceClaim[];
   readonly status: "PENDING_REVIEW" | "ACCEPTED" | "CHALLENGED" | "STALE";
+}
+
+export interface ComparisonMismatch {
+  readonly path: string;
+  readonly leftValue: unknown;
+  readonly rightValue: unknown;
+}
+
+export class StressLabComparisonError extends Error {
+  readonly code:
+    | "UNVERIFIED_RUN_RESULT"
+    | "INCOMPARABLE_RUNS"
+    | "INVALID_COMPARISON_EVIDENCE";
+  readonly path: string;
+  readonly leftValue: unknown;
+  readonly rightValue: unknown;
+  readonly mismatches: readonly ComparisonMismatch[];
+
+  constructor(
+    code: StressLabComparisonError["code"],
+    path: string,
+    message: string,
+    leftValue?: unknown,
+    rightValue?: unknown,
+    mismatches: readonly ComparisonMismatch[] = [],
+  ) {
+    super(`${code} at ${path}: ${message}`);
+    this.name = "StressLabComparisonError";
+    this.code = code;
+    this.path = path;
+    this.leftValue = leftValue;
+    this.rightValue = rightValue;
+    this.mismatches = Object.freeze([...mismatches]);
+  }
 }
 
 export interface ValidationIssue {

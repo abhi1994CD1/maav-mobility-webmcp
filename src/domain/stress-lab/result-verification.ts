@@ -47,6 +47,8 @@ const RESULT_ARTIFACT_KEYS = Object.freeze([
   "resultFingerprint",
 ] as const);
 
+const verifiedRunResultArtifacts = new WeakSet<object>();
+
 function fail(path: string, message: string): never {
   throw new StressLabArtifactVerificationError(path, message);
 }
@@ -430,5 +432,24 @@ export function verifyTrustedSimulationResult(
       "Result fingerprint does not match the verified result document.",
     );
   }
-  return deepFreeze(clonePlain(artifact)) as VerifiedRunResultArtifact;
+  const verified = deepFreeze(
+    clonePlain(artifact),
+  ) as VerifiedRunResultArtifact;
+  verifiedRunResultArtifacts.add(verified);
+  return verified;
+}
+
+/**
+ * Runtime companion to the compile-time VerifiedRunResultArtifact brand.
+ * Serialized or copied artifacts must pass verifyTrustedSimulationResult again;
+ * a cast or a matching hash alone does not create trusted comparison evidence.
+ */
+export function isVerifiedRunResultArtifact(
+  value: unknown,
+): value is VerifiedRunResultArtifact {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    verifiedRunResultArtifacts.has(value)
+  );
 }

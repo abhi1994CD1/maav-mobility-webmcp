@@ -306,21 +306,39 @@ These are presentation-only and cannot change evidence:
 
 ## Comparison and finding safety
 
-A comparison is authoritative only when both runs:
+`createTrustedRunComparison` is the domain trust boundary. Each operand contains
+a recomputed, validated `PreparedRunInput` plus the exact
+`VerifiedRunResultArtifact` returned by the Gate 4 verifier. The compile-time
+brand has a same-process runtime attestation: copying, serializing, casting, or
+rehashing a result does not preserve trust. A serialized result must pass the
+full input/ledger/snapshot/result verifier again before comparison.
 
-- completed successfully and are current for their scenario revisions;
-- represent slots A and B;
-- share engine, network, demand, seed, horizon, tick, metric version, and
-  equivalent disruption policy;
-- differ only in disclosed scenario configuration.
+The domain compares only after proving equality of network and demand
+identities, seed, horizon, terminal evaluation, input and execution versions,
+controller contract, metric definition, hard constraints, non-size fleet and
+energy assumptions, objectives, and the semantic disruption schedule. The
+only H0 differences are scenario slot and label, vehicle count, seats per
+vehicle, and the scenario-local disruption identifier. Actual differences are
+recorded in the artifact. Any other mismatch throws `INCOMPARABLE_RUNS` with
+the exact path and left/right values; no partial comparison is returned.
 
-Incompatible runs may be inspected side by side but produce no authoritative
-deltas or finding artifact.
+Application services additionally require the two completed artifacts to be
+current for their scenario revisions. That currentness rule is not inferred by
+the headless comparison domain from scenario names or UI selection.
 
-The finding builder accepts identifiers and bounded emphasis, never caller-
-supplied evidence numbers. It generates a small set of claims whose metric keys,
-values, and evidence IDs resolve to the comparison. A browser agent may explain
-the result conversationally, but its prose is not stored as evidence.
+The comparison artifact contains every published KPI with explicit unit and
+signed `rightMinusLeft = right - left` delta. Relative differences use integer
+basis points; a zero left denominator is explicitly `N/A`. Constraint rows use
+`BOTH_PASS`, `BOTH_FAIL`, `LEFT_PASS_RIGHT_FAIL`, or
+`LEFT_FAIL_RIGHT_PASS`. At most three deterministic structured claims cite
+their exact values, units, evidence IDs when available, and input/ledger/result
+fingerprints. They are evidence references, not prose, an optimizer, a score,
+or a winner selection.
+
+`comparison-schema-v1` is canonically serialized with domain separation and
+SHA-256. Operand order is meaningful: swapping operands produces a new valid
+identity and reverses all signed absolute deltas. UI state, operation IDs,
+wall-clock time, Google context, and agent wording are absent from the identity.
 
 Accept and Challenge are visible human commands. They bind the exact finding
 and evidence version. Acceptance is neither operational authorization nor

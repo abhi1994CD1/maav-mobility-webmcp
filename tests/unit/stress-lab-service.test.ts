@@ -3,10 +3,13 @@ import {
   StressLabService,
 } from "@/application/stress-lab-service";
 import {
+  HUMAN_UI_INVOCATION_CONTEXT,
   StressLabApplicationError,
+  WEBMCP_INVOCATION_CONTEXT,
   type CompareScenariosCommand,
   type RunExecutionContext,
   type StressLabComparisonExecutor,
+  type StressLabInvocationContext,
   type StressLabSimulationExecutor,
 } from "@/application/stress-lab-ports";
 import {
@@ -243,6 +246,7 @@ async function configure(
   service: StressLabService,
   prepared: PreparedRunInput,
   operationIdValue: string,
+  context: StressLabInvocationContext = HUMAN_UI_INVOCATION_CONTEXT,
 ) {
   const revision = service.readLabState().revision;
   return service.configureScenario({
@@ -250,13 +254,14 @@ async function configure(
     expectedRevision: revision,
     slot: prepared.input.scenarioSlot,
     input: prepared.input,
-  });
+  }, context);
 }
 
 function runCurrent(
   service: StressLabService,
   slot: ScenarioSlot,
   operationIdValue: string,
+  context: StressLabInvocationContext = HUMAN_UI_INVOCATION_CONTEXT,
 ) {
   const view = service.readLabState();
   const scenario = view.scenarios[slot];
@@ -265,7 +270,7 @@ function runCurrent(
     operationId: operationIdValue,
     expectedRevision: view.revision,
     scenarioRevisionId: scenario.id,
-  });
+  }, context);
 }
 
 async function expectApplicationError(
@@ -322,27 +327,27 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: service.readLabState().revision,
       leftRunId: runA.artifactId,
       rightRunId: runB.artifactId,
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
 
-    const comparisonView = service.readLabState().currentComparison;
-    expect(comparisonView?.isCurrent).toBe(true);
+    expect(service.readLabState().currentComparison?.isCurrent).toBe(true);
     const finding = await service.stageFinding({
       operationId: "golden-stage",
       expectedRevision: service.readLabState().revision,
       comparisonId: comparison.artifactId,
-      selectedClaimIds: comparisonView!.claimIds,
-    });
+      selectedOutcome: "TRADE_OFF",
+      emphasis: "BALANCED",
+    }, WEBMCP_INVOCATION_CONTEXT);
     const trustedBeforeReview = {
       runA: service.readLabState().currentRuns.A?.resultFingerprint,
       runB: service.readLabState().currentRuns.B?.resultFingerprint,
       comparison: service.readLabState().currentComparison?.comparisonFingerprint,
-      evidence: finding.evidenceDigest,
+      evidence: finding.findingFingerprint,
     };
     await service.acceptFinding({
       operationId: "golden-human-accept",
       expectedRevision: service.readLabState().revision,
       findingId: finding.artifactId,
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
 
     const final = service.readLabState();
     expect(final.currentFinding?.review).toBe("ACCEPTED");
@@ -350,7 +355,7 @@ describe("Gate 6 revision-safe application authority", () => {
       runA: final.currentRuns.A?.resultFingerprint,
       runB: final.currentRuns.B?.resultFingerprint,
       comparison: final.currentComparison?.comparisonFingerprint,
-      evidence: final.currentFinding?.evidenceDigest,
+      evidence: final.currentFinding?.findingFingerprint,
     }).toEqual(trustedBeforeReview);
     expect(SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT).toBe(
       GOLDEN_IDENTITIES.network,
@@ -374,9 +379,65 @@ describe("Gate 6 revision-safe application authority", () => {
     expect(comparison.comparisonFingerprint).toBe(
       GOLDEN_IDENTITIES.comparison,
     );
+    expect(finding.findingFingerprint).toBe(
+      "sha256-v1:f169bf3fd971e2e490378ec1f3a247bfdc73beb713c76f54edbf09fbea9e64ff",
+    );
     expect(repository.getState().reviews[finding.artifactId].decision).toBe(
       "ACCEPTED",
     );
+    const audit = final.audit;
+    expect(audit).not.toBe(repository.getState().audit);
+    expect(audit[0]).not.toBe(repository.getState().audit[0]);
+    expect(Object.isFrozen(audit)).toBe(true);
+    expect(Object.isFrozen(audit[0])).toBe(true);
+    expect(Object.isFrozen(audit[0].artifactIds)).toBe(true);
+    expect(audit[0]).toEqual({
+      sequence: 1,
+      source: "HUMAN_UI",
+      inputFingerprint:
+        "sha256-v1:e13f1dd159b288d55d1e7ecf0232ce60cff8089bc8e1f9af34bd20fe7f986ebd",
+      action: "SCENARIO_CONFIGURED",
+      operationId: "golden-config-a",
+      target: "SCENARIO:A",
+      priorRevision: 0,
+      resultingRevision: 1,
+      status: "COMPLETED",
+      artifactIds: ["scenario-A-r1"],
+    });
+    expect(
+      audit.every(
+        (entry) =>
+          (entry.source === "HUMAN_UI" || entry.source === "WEBMCP") &&
+          /^sha256-v1:[0-9a-f]{64}$/u.test(entry.inputFingerprint),
+      ),
+    ).toBe(true);
+    expect(
+      audit.find((entry) => entry.action === "FINDING_STAGED"),
+    ).toMatchObject({
+      source: "WEBMCP",
+      operationId: "golden-stage",
+      resultingRevision: finding.stateRevision,
+      artifactIds: [finding.artifactId],
+    });
+    expect(
+      audit.find((entry) => entry.action === "FINDING_ACCEPTED"),
+    ).toMatchObject({
+      source: "HUMAN_UI",
+      operationId: "golden-human-accept",
+      artifactIds: [finding.artifactId],
+    });
+    const internalSource = repository.getState().audit[0].source;
+    expect(() => {
+      (audit[0] as { source: string }).source = "tampered";
+    }).toThrow();
+    expect(repository.getState().audit[0].source).toBe(internalSource);
+    for (const entry of audit) {
+      expect(entry).not.toHaveProperty("prompt");
+      expect(entry).not.toHaveProperty("input");
+      expect(entry).not.toHaveProperty("feedback");
+      expect(entry).not.toHaveProperty("passengers");
+      expect(entry).not.toHaveProperty("label");
+    }
   }, 60_000);
 
   it("uses monotonic scenario revisions so edit/revert cannot create an ABA publication", async () => {
@@ -447,7 +508,7 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: runningRevision,
       slot: "A",
       targetOperationId: "cancel-run",
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     executor.succeed(0);
     await expectApplicationError(cancelledRun, "OPERATION_CANCELLED");
     expect(service.readLabState().currentRuns.A).toBeNull();
@@ -462,7 +523,7 @@ describe("Gate 6 revision-safe application authority", () => {
         expectedRevision: beforeLateCancel,
         slot: "A",
         targetOperationId: "complete-before-cancel",
-      }),
+      }, HUMAN_UI_INVOCATION_CONTEXT),
       "INVALID_STATE_TRANSITION",
     );
     expect(service.readLabState().revision).toBe(beforeLateCancel);
@@ -489,6 +550,23 @@ describe("Gate 6 revision-safe application authority", () => {
     await expectApplicationError(failedRerun, "SIMULATION_FAILED");
     expect(service.readLabState().currentRuns.A?.id).toBe(first.artifactId);
     expect(service.readLabState().revision).toBe(publishedRevision + 2);
+    const failedAudit = service
+      .readLabState()
+      .audit.find((entry) => entry.action === "RUN_FAILED");
+    expect(failedAudit).toMatchObject({
+      source: "HUMAN_UI",
+      action: "RUN_FAILED",
+      operationId: "failed-rerun",
+      status: "FAILED",
+      artifactIds: ["run-A-2"],
+      safeErrorCode: "SIMULATION_FAILED",
+    });
+    expect(failedAudit?.resultingRevision).toBe(
+      (failedAudit?.priorRevision ?? -1) + 1,
+    );
+    expect(failedAudit?.inputFingerprint).toMatch(
+      /^sha256-v1:[0-9a-f]{64}$/u,
+    );
   });
 
   it("propagates external cancellation and rejects unverifiable executor output", async () => {
@@ -504,6 +582,7 @@ describe("Gate 6 revision-safe application authority", () => {
         expectedRevision: service.readLabState().revision,
         scenarioRevisionId: scenario.id,
       },
+      HUMAN_UI_INVOCATION_CONTEXT,
       signal,
     );
     signal.aborted = true;
@@ -549,20 +628,67 @@ describe("Gate 6 revision-safe application authority", () => {
       slot: "A" as const,
       input: input.input,
     };
-    const firstPromise = service.configureScenario(command);
-    const duplicatePromise = service.configureScenario(command);
+    const firstPromise = service.configureScenario(
+      command,
+      HUMAN_UI_INVOCATION_CONTEXT,
+    );
+    const duplicatePromise = service.configureScenario(
+      command,
+      HUMAN_UI_INVOCATION_CONTEXT,
+    );
     expect(duplicatePromise).toBe(firstPromise);
     const first = await firstPromise;
     const duplicate = await duplicatePromise;
     expect(duplicate).toBe(first);
     expect(service.readLabState().revision).toBe(1);
+    await expectApplicationError(
+      service.configureScenario(command, WEBMCP_INVOCATION_CONTEXT),
+      "IDEMPOTENCY_CONFLICT",
+    );
+    expect(service.readLabState().revision).toBe(1);
+    expect(service.readLabState().audit).toHaveLength(1);
+    const humanAudit = service.readLabState().audit[0];
+    expect(humanAudit).toMatchObject({
+      source: "HUMAN_UI",
+      operationId: command.operationId,
+      artifactIds: [first.artifactId],
+    });
+
+    const sourceOnlyService = new StressLabService(
+      new StressLabTestRepository(),
+      IMMEDIATE_SIMULATION_EXECUTOR,
+    );
+    await sourceOnlyService.configureScenario(
+      command,
+      WEBMCP_INVOCATION_CONTEXT,
+    );
+    const sourceOnlyAudit = sourceOnlyService.readLabState().audit[0];
+    expect(sourceOnlyAudit.source).toBe("WEBMCP");
+    expect(sourceOnlyAudit.inputFingerprint).toBe(humanAudit.inputFingerprint);
+
+    const changedValueService = new StressLabService(
+      new StressLabTestRepository(),
+      IMMEDIATE_SIMULATION_EXECUTOR,
+    );
+    const changedInput = inputForSlot(input, "B");
+    await changedValueService.configureScenario(
+      {
+        ...command,
+        slot: "B",
+        input: changedInput.input,
+      },
+      HUMAN_UI_INVOCATION_CONTEXT,
+    );
+    expect(changedValueService.readLabState().audit[0].inputFingerprint).not.toBe(
+      humanAudit.inputFingerprint,
+    );
 
     await expectApplicationError(
       service.configureScenario({
         ...command,
         slot: "B",
         input: inputForSlot(input, "B").input,
-      }),
+      }, HUMAN_UI_INVOCATION_CONTEXT),
       "IDEMPOTENCY_CONFLICT",
     );
     expect(service.readLabState().revision).toBe(1);
@@ -571,7 +697,7 @@ describe("Gate 6 revision-safe application authority", () => {
       service.resetLab({
         operationId: command.operationId,
         expectedRevision: service.readLabState().revision,
-      }),
+      }, HUMAN_UI_INVOCATION_CONTEXT),
       "IDEMPOTENCY_CONFLICT",
     );
     expect(service.readLabState().revision).toBe(1);
@@ -583,11 +709,68 @@ describe("Gate 6 revision-safe application authority", () => {
         expectedRevision: 0,
         slot: "A",
         input: input.input,
-      }),
+      }, HUMAN_UI_INVOCATION_CONTEXT),
       "REVISION_CONFLICT",
     );
     expect(service.readLabState().revision).toBe(1);
     expect(repository.getState()).toBe(beforeWrongRevision);
+  });
+
+  it("accepts only trusted source singletons and keeps review/reset human-only", async () => {
+    const repository = new StressLabTestRepository();
+    const service = new StressLabService(repository, IMMEDIATE_SIMULATION_EXECUTOR);
+    const before = repository.getState();
+    await expectApplicationError(
+      Promise.resolve().then(() =>
+        service.configureScenario(
+          {
+            operationId: "spoofed-source",
+            expectedRevision: 0,
+            slot: "A",
+            input: inputForSlot(createTinyTriangleRun(), "A").input,
+          },
+          { source: "HUMAN_UI" },
+        ),
+      ),
+      "INVALID_COMMAND",
+    );
+    for (const invoke of [
+      () =>
+        service.acceptFinding(
+          {
+            operationId: "webmcp-accept",
+            expectedRevision: 0,
+            findingId: "finding-1",
+          },
+          WEBMCP_INVOCATION_CONTEXT,
+        ),
+      () =>
+        service.challengeFinding(
+          {
+            operationId: "webmcp-challenge",
+            expectedRevision: 0,
+            findingId: "finding-1",
+            feedback: "Challenge this evidence.",
+          },
+          WEBMCP_INVOCATION_CONTEXT,
+        ),
+      () =>
+        service.resetLab(
+          {
+            operationId: "webmcp-reset",
+            expectedRevision: 0,
+          },
+          WEBMCP_INVOCATION_CONTEXT,
+        ),
+    ]) {
+      await expectApplicationError(
+        Promise.resolve().then(invoke),
+        "HUMAN_AUTHORITY_REQUIRED",
+      );
+    }
+    expect(repository.getState()).toBe(before);
+    expect(service.readLabState().revision).toBe(0);
+    expect(service.readLabState().audit).toEqual([]);
   });
 
   it("serializes subscriber re-entry and returns independently frozen views", async () => {
@@ -604,7 +787,7 @@ describe("Gate 6 revision-safe application authority", () => {
           expectedRevision: view.revision,
           slot: "B",
           input: b.input,
-        });
+        }, HUMAN_UI_INVOCATION_CONTEXT);
       }
     });
     await configure(service, a, "subscriber-config-a");
@@ -632,7 +815,10 @@ describe("Gate 6 revision-safe application authority", () => {
         leftRunId: harness.runA.artifactId,
         rightRunId: harness.runB.artifactId,
       };
-      const comparisonPromise = harness.service.compareScenarios(command);
+      const comparisonPromise = harness.service.compareScenarios(
+        command,
+        HUMAN_UI_INVOCATION_CONTEXT,
+      );
       await configure(
         harness.service,
         slot === "A" ? harness.left : harness.right,
@@ -659,7 +845,7 @@ describe("Gate 6 revision-safe application authority", () => {
         expectedRevision: revisionBefore,
         leftRunId: harness.runA.artifactId,
         rightRunId: harness.runB.artifactId,
-      });
+      }, HUMAN_UI_INVOCATION_CONTEXT);
     } catch (error) {
       caught = error;
     }
@@ -683,7 +869,7 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: harness.service.readLabState().revision,
       leftRunId: harness.runA.artifactId,
       rightRunId: harness.runB.artifactId,
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     const call = comparisonExecutor.calls[0];
     const storedLeft = harness.repository.getState().runs[harness.runA.artifactId];
     const storedRight = harness.repository.getState().runs[harness.runB.artifactId];
@@ -717,54 +903,184 @@ describe("Gate 6 revision-safe application authority", () => {
     await compare;
   });
 
-  it("stages only trusted claim IDs and transitively stales finding and review authority", async () => {
+  it("accepts only the exact outcome/emphasis finding command and rejects caller evidence", async () => {
     const harness = await createCurrentTinyRuns();
     const comparison = await harness.service.compareScenarios({
       operationId: "finding-compare",
       expectedRevision: harness.service.readLabState().revision,
       leftRunId: harness.runA.artifactId,
       rightRunId: harness.runB.artifactId,
-    });
-    const claimIds = harness.service.readLabState().currentComparison!.claimIds;
-    const beforeNumericAttack = harness.service.readLabState().revision;
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const revision = harness.service.readLabState().revision;
+    const approved = {
+      operationId: "valid-finding",
+      expectedRevision: revision,
+      comparisonId: comparison.artifactId,
+      selectedOutcome: "TRADE_OFF" as const,
+      emphasis: "BALANCED" as const,
+    };
+    const forbidden = [
+      { claimIds: ["claim-1"] },
+      { selectedClaimIds: ["claim-1"] },
+      { leftValue: 999 },
+      { delta: -100 },
+      { constraintResult: "PASS" },
+      { evidenceFingerprint: "sha256-v1:forged" },
+      { claims: [] },
+      { caveats: [] },
+      { conclusion: "A wins" },
+      { winner: "A" },
+      { score: 100 },
+      { approval: "ACCEPTED" },
+    ];
+    for (const [index, extra] of forbidden.entries()) {
+      await expectApplicationError(
+        Promise.resolve().then(() =>
+          harness.service.stageFinding({
+            ...approved,
+            operationId: `forbidden-finding-${index}`,
+            ...extra,
+          } as never, WEBMCP_INVOCATION_CONTEXT),
+        ),
+        "INVALID_COMMAND",
+      );
+      expect(harness.service.readLabState().revision).toBe(revision);
+    }
+    for (const requiredKey of Object.keys(approved)) {
+      const missing = { ...approved } as Record<string, unknown>;
+      delete missing[requiredKey];
+      await expectApplicationError(
+        Promise.resolve().then(() =>
+          harness.service.stageFinding(
+            missing as never,
+            WEBMCP_INVOCATION_CONTEXT,
+          ),
+        ),
+        "INVALID_COMMAND",
+      );
+    }
+    for (const invalid of [
+      { ...approved, operationId: "invalid-outcome", selectedOutcome: "WINNER" },
+      { ...approved, operationId: "invalid-emphasis", emphasis: "COST" },
+    ]) {
+      await expectApplicationError(
+        Promise.resolve().then(() =>
+          harness.service.stageFinding(
+            invalid as never,
+            WEBMCP_INVOCATION_CONTEXT,
+          ),
+        ),
+        "INVALID_COMMAND",
+      );
+    }
+    const pollutionShaped = JSON.parse(
+      JSON.stringify({ ...approved, operationId: "pollution-shaped" }).replace(
+        /\}$/u,
+        ',"__proto__":{"polluted":true}}',
+      ),
+    );
     await expectApplicationError(
       Promise.resolve().then(() =>
-        harness.service.stageFinding({
-          operationId: "numeric-claim-attack",
-          expectedRevision: beforeNumericAttack,
-          comparisonId: comparison.artifactId,
-          selectedClaimIds: claimIds,
-          leftValue: 999,
-        } as never),
+        harness.service.stageFinding(
+          pollutionShaped as never,
+          WEBMCP_INVOCATION_CONTEXT,
+        ),
       ),
       "INVALID_COMMAND",
     );
-    expect(harness.service.readLabState().revision).toBe(beforeNumericAttack);
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
 
+    const wrongRevisionState = harness.repository.getState();
     await expectApplicationError(
       harness.service.stageFinding({
-        operationId: "unknown-claim",
-        expectedRevision: beforeNumericAttack,
-        comparisonId: comparison.artifactId,
-        selectedClaimIds: ["claim-invented"],
-      }),
-      "INVALID_COMMAND",
+        ...approved,
+        operationId: "wrong-revision-finding",
+        expectedRevision: revision - 1,
+      }, WEBMCP_INVOCATION_CONTEXT),
+      "REVISION_CONFLICT",
     );
-    expect(harness.service.readLabState().revision).toBe(beforeNumericAttack);
+    expect(harness.repository.getState()).toBe(wrongRevisionState);
 
-    const finding = await harness.service.stageFinding({
-      operationId: "valid-finding",
-      expectedRevision: beforeNumericAttack,
-      comparisonId: comparison.artifactId,
-      selectedClaimIds: claimIds.slice(0, 2),
-    });
+    const firstPromise = harness.service.stageFinding(
+      approved,
+      WEBMCP_INVOCATION_CONTEXT,
+    );
+    const duplicatePromise = harness.service.stageFinding(
+      approved,
+      WEBMCP_INVOCATION_CONTEXT,
+    );
+    expect(duplicatePromise).toBe(firstPromise);
+    const finding = await firstPromise;
+    expect(await duplicatePromise).toBe(finding);
+    expect(harness.service.readLabState().revision).toBe(revision + 1);
+    await expectApplicationError(
+      harness.service.stageFinding(approved, HUMAN_UI_INVOCATION_CONTEXT),
+      "IDEMPOTENCY_CONFLICT",
+    );
+    await expectApplicationError(
+      harness.service.stageFinding({
+        ...approved,
+        selectedOutcome: "A",
+      }, WEBMCP_INVOCATION_CONTEXT),
+      "IDEMPOTENCY_CONFLICT",
+    );
+    await expectApplicationError(
+      harness.service.stageFinding({
+        ...approved,
+        emphasis: "ENERGY",
+      }, WEBMCP_INVOCATION_CONTEXT),
+      "IDEMPOTENCY_CONFLICT",
+    );
+
     const stored = harness.repository.getState().findings[finding.artifactId];
     const trustedComparison =
       harness.repository.getState().comparisons[comparison.artifactId].artifact;
-    expect(stored.selectedClaims).toEqual(trustedComparison.claims.slice(0, 2));
-    expect(stored.selectedClaims[0]).toBe(trustedComparison.claims[0]);
+    expect(stored.candidate.comparisonFingerprint).toBe(
+      trustedComparison.comparisonFingerprint,
+    );
+    expect(stored.candidate.selectedOutcome).toBe("TRADE_OFF");
+    expect(stored.candidate.emphasis).toBe("BALANCED");
+    expect(stored.candidate.claims).toEqual(finding.claims);
+    expect(stored.candidate.caveats).toEqual(finding.caveats);
+    expect(finding.claims.length).toBeLessThanOrEqual(3);
+    expect(Object.isFrozen(finding)).toBe(true);
+    expect(Object.isFrozen(finding.claims)).toBe(true);
+    const findingView = harness.service.readLabState().currentFinding!;
+    expect(Object.isFrozen(findingView)).toBe(true);
+    expect(Object.isFrozen(findingView.claims)).toBe(true);
+    expect(Object.isFrozen(findingView.caveats)).toBe(true);
+    expect(() => {
+      (findingView.claims as unknown as unknown[]).push("tampered");
+    }).toThrow();
+    expect(
+      harness.repository.getState().findings[finding.artifactId].candidate
+        .findingFingerprint,
+    ).toBe(finding.findingFingerprint);
+    expect(findingView.review).toBe(
+      "PENDING_REVIEW",
+    );
+  });
+
+  it("keeps generated finding evidence immutable through human review and transitive staleness", async () => {
+    const harness = await createCurrentTinyRuns();
+    const comparison = await harness.service.compareScenarios({
+      operationId: "finding-compare-review",
+      expectedRevision: harness.service.readLabState().revision,
+      leftRunId: harness.runA.artifactId,
+      rightRunId: harness.runB.artifactId,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const finding = await harness.service.stageFinding({
+      operationId: "finding-review",
+      expectedRevision: harness.service.readLabState().revision,
+      comparisonId: comparison.artifactId,
+      selectedOutcome: "TRADE_OFF",
+      emphasis: "BALANCED",
+    }, WEBMCP_INVOCATION_CONTEXT);
+    const trustedComparison =
+      harness.repository.getState().comparisons[comparison.artifactId].artifact;
     const fingerprintsBefore = {
       comparison: trustedComparison.comparisonFingerprint,
+      finding: finding.findingFingerprint,
       results: [
         harness.runA.resultFingerprint,
         harness.runB.resultFingerprint,
@@ -775,12 +1091,15 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: harness.service.readLabState().revision,
       findingId: finding.artifactId,
       feedback: "Revisit the explicit service and energy trade-off.",
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     expect(harness.service.readLabState().currentFinding?.review).toBe(
       "CHALLENGED",
     );
     expect({
       comparison: trustedComparison.comparisonFingerprint,
+      finding:
+        harness.repository.getState().findings[finding.artifactId].candidate
+          .findingFingerprint,
       results: [
         harness.runA.resultFingerprint,
         harness.runB.resultFingerprint,
@@ -792,15 +1111,16 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: harness.service.readLabState().revision,
       leftRunId: harness.runA.artifactId,
       rightRunId: harness.runB.artifactId,
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     const freshFinding = await harness.service.stageFinding({
       operationId: "finding-2",
       expectedRevision: harness.service.readLabState().revision,
       comparisonId: freshComparison.artifactId,
-      selectedClaimIds:
-        harness.service.readLabState().currentComparison!.claimIds,
-    });
+      selectedOutcome: "B",
+      emphasis: "RESILIENCE",
+    }, WEBMCP_INVOCATION_CONTEXT);
     await configure(harness.service, harness.left, "stale-finding-edit");
+    await configure(harness.service, harness.left, "stale-finding-revert");
     expect(harness.service.readLabState().currentRuns.A).toBeNull();
     expect(harness.service.readLabState().currentRuns.B?.isCurrent).toBe(true);
     expect(harness.service.readLabState().currentComparison).toBeNull();
@@ -810,8 +1130,9 @@ describe("Gate 6 revision-safe application authority", () => {
         operationId: "stage-stale-comparison",
         expectedRevision: harness.service.readLabState().revision,
         comparisonId: freshComparison.artifactId,
-        selectedClaimIds: claimIds,
-      }),
+        selectedOutcome: "TRADE_OFF",
+        emphasis: "BALANCED",
+      }, WEBMCP_INVOCATION_CONTEXT),
       "STALE_COMPARISON",
     );
     await expectApplicationError(
@@ -819,10 +1140,43 @@ describe("Gate 6 revision-safe application authority", () => {
         operationId: "stale-human-accept",
         expectedRevision: harness.service.readLabState().revision,
         findingId: freshFinding.artifactId,
-      }),
+      }, HUMAN_UI_INVOCATION_CONTEXT),
       "STALE_FINDING",
     );
     expect(harness.service.readLabState().currentFinding).toBeNull();
+  });
+
+  it("makes a staged finding historical after deterministic reset", async () => {
+    const harness = await createCurrentTinyRuns();
+    const comparison = await harness.service.compareScenarios({
+      operationId: "reset-finding-compare",
+      expectedRevision: harness.service.readLabState().revision,
+      leftRunId: harness.runA.artifactId,
+      rightRunId: harness.runB.artifactId,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const finding = await harness.service.stageFinding({
+      operationId: "reset-finding-stage",
+      expectedRevision: harness.service.readLabState().revision,
+      comparisonId: comparison.artifactId,
+      selectedOutcome: "INCONCLUSIVE",
+      emphasis: "SERVICE",
+    }, WEBMCP_INVOCATION_CONTEXT);
+    await harness.service.resetLab({
+      operationId: "reset-after-finding",
+      expectedRevision: harness.service.readLabState().revision,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    expect(harness.service.readLabState().currentFinding).toBeNull();
+    expect(harness.service.readLabState().historical.findingIds).toContain(
+      finding.artifactId,
+    );
+    await expectApplicationError(
+      harness.service.acceptFinding({
+        operationId: "accept-reset-finding",
+        expectedRevision: harness.service.readLabState().revision,
+        findingId: finding.artifactId,
+      }, HUMAN_UI_INVOCATION_CONTEXT),
+      "STALE_FINDING",
+    );
   });
 
   it("keeps trusted fingerprints independent of application operation IDs", async () => {
@@ -832,7 +1186,14 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: first.service.readLabState().revision,
       leftRunId: first.runA.artifactId,
       rightRunId: first.runB.artifactId,
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const firstFinding = await first.service.stageFinding({
+      operationId: "first-finding-operation-id",
+      expectedRevision: first.service.readLabState().revision,
+      comparisonId: firstComparison.artifactId,
+      selectedOutcome: "TRADE_OFF",
+      emphasis: "BALANCED",
+    }, WEBMCP_INVOCATION_CONTEXT);
 
     const repository = new StressLabTestRepository();
     const service = new StressLabService(
@@ -840,16 +1201,43 @@ describe("Gate 6 revision-safe application authority", () => {
       IMMEDIATE_SIMULATION_EXECUTOR,
       IMMEDIATE_COMPARISON_EXECUTOR,
     );
-    await configure(service, first.left, "different-config-a");
-    await configure(service, first.right, "different-config-b");
-    const runA = await runCurrent(service, "A", "different-run-a");
-    const runB = await runCurrent(service, "B", "different-run-b");
+    await configure(
+      service,
+      first.left,
+      "different-config-a",
+      WEBMCP_INVOCATION_CONTEXT,
+    );
+    await configure(
+      service,
+      first.right,
+      "different-config-b",
+      WEBMCP_INVOCATION_CONTEXT,
+    );
+    const runA = await runCurrent(
+      service,
+      "A",
+      "different-run-a",
+      WEBMCP_INVOCATION_CONTEXT,
+    );
+    const runB = await runCurrent(
+      service,
+      "B",
+      "different-run-b",
+      WEBMCP_INVOCATION_CONTEXT,
+    );
     const secondComparison = await service.compareScenarios({
       operationId: "second-operation-id",
       expectedRevision: service.readLabState().revision,
       leftRunId: runA.artifactId,
       rightRunId: runB.artifactId,
-    });
+    }, WEBMCP_INVOCATION_CONTEXT);
+    const secondFinding = await service.stageFinding({
+      operationId: "second-finding-operation-id",
+      expectedRevision: service.readLabState().revision,
+      comparisonId: secondComparison.artifactId,
+      selectedOutcome: "TRADE_OFF",
+      emphasis: "BALANCED",
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     expect({
       inputA: runA.inputFingerprint,
       ledgerA: runA.eventLedgerFingerprint,
@@ -858,6 +1246,7 @@ describe("Gate 6 revision-safe application authority", () => {
       ledgerB: runB.eventLedgerFingerprint,
       resultB: runB.resultFingerprint,
       comparison: secondComparison.comparisonFingerprint,
+      finding: secondFinding.findingFingerprint,
     }).toEqual({
       inputA: first.runA.inputFingerprint,
       ledgerA: first.runA.eventLedgerFingerprint,
@@ -866,6 +1255,7 @@ describe("Gate 6 revision-safe application authority", () => {
       ledgerB: first.runB.eventLedgerFingerprint,
       resultB: first.runB.resultFingerprint,
       comparison: firstComparison.comparisonFingerprint,
+      finding: firstFinding.findingFingerprint,
     });
   });
 
@@ -883,7 +1273,7 @@ describe("Gate 6 revision-safe application authority", () => {
       expectedRevision: service.readLabState().revision,
       scenarioRevisionId: configured.artifactId,
       disruption: disrupted.input.disruptions[0],
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     expect(injected.scenarioRevisionRef.revision).toBe(2);
     expect(injected.scenarioRevisionRef.preparedInputFingerprint).toBe(
       disrupted.fingerprint,
@@ -891,7 +1281,7 @@ describe("Gate 6 revision-safe application authority", () => {
     const reset = await service.resetLab({
       operationId: "human-reset",
       expectedRevision: service.readLabState().revision,
-    });
+    }, HUMAN_UI_INVOCATION_CONTEXT);
     expect(reset.status).toBe("COMPLETED");
     const view = service.readLabState();
     expect(view.scenarios.A?.ref.revision).toBe(3);

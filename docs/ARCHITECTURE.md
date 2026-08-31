@@ -4,10 +4,10 @@
 
 This document owns target system boundaries, dependency direction, artifact
 flow, state ownership, adapter responsibilities, and atomic command behavior.
-Gates 3–5 implement deterministic inputs, verified simulations, and trusted
-comparisons. Gate 6 implements the headless application authority described
-below; the current browser runtime remains separate until later gated slices
-integrate it through that boundary.
+Gates 3–5 implement deterministic inputs, verified simulations, trusted
+comparisons, and deterministic finding candidates. Gate 6 implements the
+headless application authority described below; the current browser runtime
+remains separate until later gated slices integrate it through that boundary.
 
 ## Architectural style
 
@@ -140,6 +140,21 @@ Gate 6 exposes the headless commands `configureScenario`,
 than internal repository objects. This is an application API, not the Gate 7
 WebMCP schema or tool export.
 
+The headless staging command is closed-world:
+
+```ts
+{
+  operationId: string;
+  expectedRevision: number;
+  comparisonId: string;
+  selectedOutcome: "A" | "B" | "TRADE_OFF" | "INCONCLUSIVE";
+  emphasis: "BALANCED" | "SERVICE" | "ENERGY" | "RESILIENCE";
+}
+```
+
+Unknown fields fail before mutation. In particular, there is no caller-supplied
+claim ID or numeric-evidence field.
+
 ### Gate 6 authority model
 
 Application currentness uses two independent authorities:
@@ -171,6 +186,18 @@ subscriber re-entry—share one terminal promise. Reusing the ID with a differen
 canonical command fails as `IDEMPOTENCY_CONFLICT`. Application command
 identities, revisions, generations, operation IDs, cancellation state, and
 review feedback are excluded from Gate 3–5 evidence.
+
+Invocation authority is a separate, trusted application argument rather than a
+tool-command field. Adapters must pass exactly one frozen application context:
+`HUMAN_UI` or `WEBMCP`. The source is included in the application-only command
+identity and operation token, then atomically appended to every durable audit
+entry with the operation, revisions, status, and artifact references. The same
+operation ID and source remains idempotent; reusing an operation ID from a
+different source fails closed. Source never enters a scenario, run,
+comparison, finding candidate, or trusted fingerprint. Audit records contain no
+raw prompt, passenger record, unsafe label, wall-clock timestamp, or duration.
+`Accept`, `Challenge`, and deterministic Reset reject a `WEBMCP` context even
+though all other application commands share the same service boundary.
 
 Run publication follows one guarded path:
 
@@ -204,13 +231,16 @@ no partial comparison. A new current run, either scenario edit, or reset makes
 dependent comparison and finding pointers stale transitively while immutable
 historical records remain inspectable.
 
-Finding staging accepts only a current comparison ID and one to three claim IDs
-already present in its bounded claim set. It copies no caller-supplied KPI,
-delta, constraint outcome, score, or winner conclusion. The staged evidence
-digest binds the comparison fingerprint and selected trusted claims. Accept and
+Finding staging accepts exactly a current comparison ID, a proposed outcome
+(`A`, `B`, `TRADE_OFF`, or `INCONCLUSIVE`), and an operational emphasis
+(`BALANCED`, `SERVICE`, `ENERGY`, or `RESILIENCE`), plus application revision
+and operation metadata. The caller cannot select claim IDs or supply KPI,
+delta, constraint, score, ranking, caveat, evidence fingerprint, or conclusion
+content. The domain builder deterministically selects at most three exact rows
+from the trusted comparison and adds bounded versioned caveats. Accept and
 Challenge update a separate application review record only while that finding
-is current; they cannot alter run, comparison, claim, or evidence identities and
-do not dispatch or execute anything.
+is current; they cannot alter run, comparison, claim, caveat, or evidence
+identities and do not dispatch or execute anything.
 
 ### Repository adapter
 
@@ -423,6 +453,57 @@ or a winner selection.
 SHA-256. Operand order is meaningful: swapping operands produces a new valid
 identity and reverses all signed absolute deltas. UI state, operation IDs,
 wall-clock time, Google context, and agent wording are absent from the identity.
+
+`createFindingCandidate` accepts only the exact runtime-trusted comparison plus
+the proposed outcome and emphasis. `finding-schema-v1` owns the candidate
+shape, `finding-template-v1` owns bounded renderer wording, and
+`finding-policy-v1` owns eligible metric families, exact selection arithmetic,
+materiality thresholds, constraint precedence, and tie-breaking. All published
+values, units, deltas, transitions, and input/ledger/result references are
+copied from the comparison; transient selector arithmetic never becomes a KPI,
+score, or returned magnitude.
+
+The policy maintains one exhaustive registry over every published comparison
+metric. It excludes controlled demand, redundant outcomes, and diagnostics from
+selection; eligible rows are classified as service, resilience, energy, or
+utilization with an explicit direction and unit. The candidate has up to three
+ordered slots:
+
+1. the canonically first genuine `LEFT_PASS_RIGHT_FAIL` or
+   `LEFT_FAIL_RIGHT_PASS` hard-constraint transition;
+2. the largest non-zero service/resilience difference allowed by the emphasis;
+3. the largest material energy/utilization difference.
+
+Metric magnitude is the exact ratio
+`abs(B - A) / max(abs(A), abs(B))`. Ratios are compared through transient
+integer cross multiplication, never floating-point ranking or cross-unit raw
+deltas; exact ties use the metric key. `SERVICE` and `RESILIENCE` use their own
+family before the documented fallback, while `BALANCED` and `ENERGY` rank the
+combined operational pool. No emphasis supplies weights or a composite score.
+
+Energy evidence is material only at 100 Wh and 5%, energy/passenger-km at one
+native integer unit and 5%, and utilization at 100 basis points. These are H0
+presentation thresholds, not statistical significance. Recovered versus not
+recovered is a categorical resilience difference; both recovered ranks the
+numeric duration, both not recovered becomes a caveat, and genuine no-
+disruption N/A remains distinct. A constraint slot suppresses only its exact
+duplicate metric row.
+
+`selectedOutcome` never affects factual selection or ordering. After selection,
+direction metadata classifies opposing service/resilience and efficiency facts
+as `OPPOSING_TRADE_OFF`; aligned facts remain a material efficiency difference.
+A proposed `TRADE_OFF` cannot manufacture opposition and receives a bounded
+caveat when the selected evidence does not establish it. Every failed hard
+constraint remains a deterministic caveat, including shared `BOTH_FAIL`
+outcomes that are not scenario differences.
+
+The finding fingerprint is the domain-separated canonical identity of the
+finding, template, and policy versions, comparison fingerprint, proposed
+outcome, emphasis, evidence relationship, generated claims, and caveats.
+Operation IDs, application revisions,
+wall-clock, UI, browser, and WebMCP state are excluded. This is proposed
+decision evidence with `PENDING_REVIEW` application review—not acceptance,
+certification, recommendation, or operating authority.
 
 Accept and Challenge are visible human commands. They bind the exact finding
 and evidence version. Acceptance is neither operational authorization nor

@@ -615,6 +615,29 @@ no optimality or winner assertion. A later renderer or browser agent may explain
 them, but that explanation cannot modify trusted evidence. Finding staging and
 human review remain later application gates.
 
+### Pending-finding selection policy
+
+The finding builder reads the complete trusted comparison rather than treating
+the comparison's compact claims as a ranking. `finding-policy-v1` selects zero
+to three pending-review rows in this order: a genuine pass/fail constraint
+difference, the largest emphasis-relevant service/resilience difference, and
+the largest material energy/utilization difference. Shared `BOTH_FAIL` and
+`BOTH_PASS` constraints are caveats, not side differences.
+
+Numeric salience is `abs(B - A) / max(abs(A), abs(B))`, compared exactly by
+integer cross multiplication. Equal and both-zero values are excluded; one
+zero yields magnitude one; null/N/A is excluded except for typed recovery
+state. Recovered versus not recovered outranks numeric resilience rows, both
+recovered compares duration, and both not recovered remains an explicit
+caveat. Energy thresholds are 100 Wh plus 5%, energy/passenger-km one native
+unit plus 5%, and utilization 100 basis points. These thresholds decide which
+facts merit limited presentation space; they are not model significance tests.
+
+Direction metadata can describe whether selected operational and efficiency
+evidence genuinely opposes or aligns. Proposed outcome never changes factual
+selection, and neither a proposed trade-off nor an emphasis creates a winner,
+score, weighting, recommendation, or operational authority.
+
 ## Cancellation and atomic commit
 
 Keep the step function pure. An async application wrapper:

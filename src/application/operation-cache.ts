@@ -1,7 +1,10 @@
+import type { StressLabActionSource } from "./stress-lab-ports";
+
 export interface OperationIdentity {
   readonly operationId: string;
   readonly commandName: string;
-  readonly commandFingerprint: string;
+  readonly source: StressLabActionSource;
+  readonly inputFingerprint: string;
 }
 
 interface CachedOperation<Result> extends OperationIdentity {
@@ -31,7 +34,8 @@ export class OperationCache {
     if (existing) {
       if (
         existing.commandName !== identity.commandName ||
-        existing.commandFingerprint !== identity.commandFingerprint
+        existing.source !== identity.source ||
+        existing.inputFingerprint !== identity.inputFingerprint
       ) {
         return Promise.reject(
           this.conflict(

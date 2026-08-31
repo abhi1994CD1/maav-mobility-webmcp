@@ -59,6 +59,10 @@ export const STRESS_LAB_COMPARISON_SCHEMA_VERSION =
   "comparison-schema-v1" as const;
 export const STRESS_LAB_COMPARISON_CLAIM_TEMPLATE_VERSION =
   "bounded-comparison-claims-v1" as const;
+export const STRESS_LAB_FINDING_SCHEMA_VERSION = "finding-schema-v1" as const;
+export const STRESS_LAB_FINDING_TEMPLATE_VERSION =
+  "finding-template-v1" as const;
+export const STRESS_LAB_FINDING_POLICY_VERSION = "finding-policy-v1" as const;
 
 const STABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const FINGERPRINT_PATTERN = /^sha256-v1:[0-9a-f]{64}$/u;
@@ -910,14 +914,122 @@ export type TrustedComparisonArtifact = ComparisonArtifact & {
   readonly [trustedComparisonArtifactBrand]: true;
 };
 
-export interface FindingArtifact {
-  readonly id: FindingId;
-  readonly comparisonId: ComparisonId;
-  readonly evidenceHash: Fingerprint;
-  readonly selectedOutcome: "A" | "B" | "TRADE_OFF" | "INCONCLUSIVE";
-  readonly emphasis: "BALANCED" | "SERVICE" | "ENERGY" | "RESILIENCE";
-  readonly claims: readonly EvidenceClaim[];
-  readonly status: "PENDING_REVIEW" | "ACCEPTED" | "CHALLENGED" | "STALE";
+export type FindingSelectedOutcome = "A" | "B" | "TRADE_OFF" | "INCONCLUSIVE";
+
+export type FindingEmphasis = "BALANCED" | "SERVICE" | "ENERGY" | "RESILIENCE";
+
+export type FindingMetricFamily =
+  | "SERVICE"
+  | "RESILIENCE"
+  | "ENERGY"
+  | "UTILIZATION";
+
+export type FindingImprovementDirection = "LOWER" | "HIGHER";
+
+export type FindingFavouredSide = "A" | "B" | "EQUAL" | "NOT_APPLICABLE";
+
+export type FindingEvidenceRelationship =
+  | "OPPOSING_TRADE_OFF"
+  | "ALIGNED_MATERIAL_DIFFERENCE"
+  | "NEUTRAL_MATERIAL_DIFFERENCE"
+  | "NO_MATERIAL_EFFICIENCY_DIFFERENCE";
+
+export type FindingEvidenceClaim =
+  | {
+      readonly claimId: string;
+      readonly templateId: "constraint-evidence-v1";
+      readonly selectionSlot: "CONSTRAINT_DIFFERENCE";
+      readonly subjectKind: "CONSTRAINT";
+      readonly constraintCode: ConstraintEvaluation["code"];
+      readonly unit: ConstraintEvaluation["unit"];
+      readonly left: ComparedConstraintSide;
+      readonly right: ComparedConstraintSide;
+      readonly rightMinusLeft: number | null;
+      readonly relation: ComparisonRelation | "NOT_APPLICABLE";
+      readonly constraintTransition: ConstraintTransition;
+    }
+  | {
+      readonly claimId: string;
+      readonly templateId: "metric-evidence-v1";
+      readonly selectionSlot:
+        | "SERVICE_RESILIENCE_DIFFERENCE"
+        | "ENERGY_UTILIZATION_DIFFERENCE";
+      readonly subjectKind: "METRIC";
+      readonly metricKey: ComparisonMetricKey;
+      readonly metricFamily: FindingMetricFamily;
+      readonly improvementDirection: FindingImprovementDirection;
+      readonly favouredSide: FindingFavouredSide;
+      readonly recoveryStateComparison?: Readonly<{
+        readonly A: "RECOVERED" | "NOT_RECOVERED" | "NOT_APPLICABLE";
+        readonly B: "RECOVERED" | "NOT_RECOVERED" | "NOT_APPLICABLE";
+      }>;
+      readonly unit: ComparisonNumericUnit;
+      readonly leftValue: number | null;
+      readonly rightValue: number | null;
+      readonly rightMinusLeft: number | null;
+      readonly relation: ComparisonRelation | "NOT_APPLICABLE";
+      readonly relativeDeltaBasisPoints: number | null;
+      readonly relativeDeltaStatus: RelativeDeltaStatus;
+      readonly leftEvidence: ComparisonEvidenceReference;
+      readonly rightEvidence: ComparisonEvidenceReference;
+    };
+
+export type FindingCaveat =
+  | {
+      readonly code: "HARD_CONSTRAINT_FAILURES_PRESENT";
+      readonly templateId: "hard-constraint-failures-v1";
+      readonly leftFailedConstraintCodes: readonly ConstraintEvaluation["code"][];
+      readonly rightFailedConstraintCodes: readonly ConstraintEvaluation["code"][];
+    }
+  | {
+      readonly code: "PROPOSED_OUTCOME_REQUIRES_HUMAN_REVIEW";
+      readonly templateId: "proposed-outcome-human-review-v1";
+      readonly proposedOutcome: "A" | "B";
+      readonly failedConstraintCodes: readonly ConstraintEvaluation["code"][];
+    }
+  | {
+      readonly code: "TRADE_OFF_REQUIRES_HUMAN_REVIEW";
+      readonly templateId: "trade-off-human-review-v1";
+    }
+  | {
+      readonly code: "INCONCLUSIVE_REQUIRES_HUMAN_REVIEW";
+      readonly templateId: "inconclusive-human-review-v1";
+    }
+  | {
+      readonly code: "NOT_APPLICABLE_EVIDENCE_PRESENT";
+      readonly templateId: "not-applicable-evidence-v1";
+      readonly metricKeys: readonly ComparisonMetricKey[];
+    }
+  | {
+      readonly code: "RECOVERY_NOT_COMPLETED";
+      readonly templateId: "recovery-not-completed-v1";
+      readonly sides: readonly ("A" | "B")[];
+    }
+  | {
+      readonly code: "PROPOSED_TRADE_OFF_NOT_ESTABLISHED";
+      readonly templateId: "proposed-trade-off-not-established-v1";
+      readonly evidenceRelationship: Exclude<
+        FindingEvidenceRelationship,
+        "OPPOSING_TRADE_OFF"
+      >;
+    }
+  | {
+      readonly code: "SYNTHETIC_SIMULATION_LIMITATION";
+      readonly templateId: "synthetic-simulation-limitation-v1";
+    };
+
+export interface FindingCandidateArtifact {
+  readonly findingSchemaVersion: typeof STRESS_LAB_FINDING_SCHEMA_VERSION;
+  readonly findingTemplateVersion: typeof STRESS_LAB_FINDING_TEMPLATE_VERSION;
+  readonly findingPolicyVersion: typeof STRESS_LAB_FINDING_POLICY_VERSION;
+  readonly comparisonFingerprint: Fingerprint;
+  readonly selectedOutcome: FindingSelectedOutcome;
+  readonly emphasis: FindingEmphasis;
+  readonly evidenceRelationship: FindingEvidenceRelationship;
+  readonly claims: readonly FindingEvidenceClaim[];
+  readonly caveats: readonly FindingCaveat[];
+  readonly canonicalFindingJson: string;
+  readonly findingFingerprint: Fingerprint;
 }
 
 export interface ComparisonMismatch {

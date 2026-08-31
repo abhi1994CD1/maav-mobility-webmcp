@@ -29,6 +29,8 @@ export interface TrustedComparisonOperand {
   readonly verifiedResult: VerifiedRunResultArtifact;
 }
 
+const trustedComparisonArtifacts = new WeakSet<object>();
+
 const METRIC_DEFINITIONS = Object.freeze([
   ["requestedPassengers", "PASSENGERS"],
   ["servedPassengers", "PASSENGERS"],
@@ -763,9 +765,26 @@ export function createTrustedRunComparison(
     "RUN_COMPARISON_EVIDENCE",
     validatedIdentity,
   );
-  return deepFreeze({
+  const trusted = deepFreeze({
     ...clonePlain(identity),
     canonicalComparisonJson: document.canonicalJson,
     comparisonFingerprint: document.fingerprint,
   }) as TrustedComparisonArtifact;
+  trustedComparisonArtifacts.add(trusted);
+  return trusted;
+}
+
+/**
+ * Runtime companion to the TrustedComparisonArtifact brand. A copied, cast,
+ * or serialized comparison must be reconstructed through the trusted Gate 5
+ * comparison boundary before it can become finding evidence.
+ */
+export function isTrustedRunComparison(
+  value: unknown,
+): value is TrustedComparisonArtifact {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    trustedComparisonArtifacts.has(value)
+  );
 }

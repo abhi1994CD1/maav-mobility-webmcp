@@ -1,6 +1,7 @@
 import { createGoldenExperimentInputs } from "@/data/scenarios/sandton-rosebank-v1";
 import { createTrustedRunComparison } from "@/domain/stress-lab/comparison";
 import { runDeterministicSimulationAsync } from "@/domain/stress-lab/engine";
+import { createFindingCandidate } from "@/domain/stress-lab/finding";
 import { fingerprintCanonical } from "@/domain/stress-lab/fingerprint";
 import {
   isVerifiedRunResultArtifact,
@@ -17,17 +18,19 @@ import {
   StressLabComparisonError,
   StressLabSimulationCancelledError,
   type DeterministicSimulationResult,
-  type EvidenceClaim,
   type EventLedgerEnvelope,
+  type FindingEmphasis,
+  type FindingSelectedOutcome,
   type Fingerprint,
   type PreparedRunInput,
   type RunResultArtifact,
   type ScenarioSlot,
-  type TrustedComparisonArtifact,
 } from "@/domain/stress-lab/types";
 import { OperationCache } from "./operation-cache";
 import {
+  HUMAN_UI_INVOCATION_CONTEXT,
   StressLabApplicationError,
+  WEBMCP_INVOCATION_CONTEXT,
   type AcceptFindingCommand,
   type ApplicationAuditEntry,
   type CancelRunCommand,
@@ -54,13 +57,13 @@ import {
   type StagedFindingRecord,
   type StressLabApplicationRepository,
   type StressLabApplicationState,
+  type StressLabInvocationContext,
   type StressLabComparisonExecutor,
   type StressLabSimulationExecutor,
   type StressLabStateView,
 } from "./stress-lab-ports";
 
 const APPLICATION_COMMAND_SCOPE = "APPLICATION_COMMAND";
-const FINDING_EVIDENCE_SCOPE = "STAGED_FINDING_EVIDENCE";
 const MAX_PUBLICATION_ATTEMPTS = 8;
 
 function clonePlain<Value>(value: Value): Value {
@@ -151,6 +154,38 @@ function assertSlot(value: unknown): asserts value is ScenarioSlot {
   }
 }
 
+function assertFindingOutcome(
+  value: unknown,
+): asserts value is FindingSelectedOutcome {
+  if (
+    value !== "A" &&
+    value !== "B" &&
+    value !== "TRADE_OFF" &&
+    value !== "INCONCLUSIVE"
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "selectedOutcome",
+      "selectedOutcome must be A, B, TRADE_OFF, or INCONCLUSIVE.",
+    );
+  }
+}
+
+function assertFindingEmphasis(value: unknown): asserts value is FindingEmphasis {
+  if (
+    value !== "BALANCED" &&
+    value !== "SERVICE" &&
+    value !== "ENERGY" &&
+    value !== "RESILIENCE"
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "emphasis",
+      "emphasis must be BALANCED, SERVICE, ENERGY, or RESILIENCE.",
+    );
+  }
+}
+
 function assertBoundedFeedback(value: string): string {
   if (
     typeof value !== "string" ||
@@ -167,7 +202,7 @@ function assertBoundedFeedback(value: string): string {
   return value.trim();
 }
 
-function commandIdentity(
+function commandInputFingerprint(
   commandName: string,
   value: Readonly<Record<string, unknown>>,
 ): Fingerprint {
@@ -175,6 +210,34 @@ function commandIdentity(
     commandName,
     ...value,
   });
+}
+
+function assertTrustedInvocationContext(
+  context: unknown,
+): asserts context is StressLabInvocationContext {
+  if (
+    context !== HUMAN_UI_INVOCATION_CONTEXT &&
+    context !== WEBMCP_INVOCATION_CONTEXT
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "invocationContext",
+      "A trusted application invocation context is required.",
+    );
+  }
+}
+
+function assertHumanInvocation(
+  context: StressLabInvocationContext,
+  commandName: string,
+): void {
+  if (context.source !== "HUMAN_UI") {
+    throw new StressLabApplicationError(
+      "HUMAN_AUTHORITY_REQUIRED",
+      commandName,
+      `${commandName} requires a visible human UI invocation.`,
+    );
+  }
 }
 
 function sameRevisionRef(
@@ -362,14 +425,6 @@ function isFindingCurrent(
   );
 }
 
-function claimId(claim: EvidenceClaim, index: number): string {
-  return `claim-${index + 1}:${claim.claimCode}:${claim.subjectId}`;
-}
-
-function claimIds(comparison: TrustedComparisonArtifact): readonly string[] {
-  return comparison.claims.map((claim, index) => claimId(claim, index));
-}
-
 function scenarioView(
   state: StressLabApplicationState,
   slot: ScenarioSlot,
@@ -479,7 +534,6 @@ export class StressLabService {
           isCurrent: isComparisonCurrent(state, currentComparisonRecord),
           comparisonFingerprint:
             currentComparisonRecord.artifact.comparisonFingerprint,
-          claimIds: [...claimIds(currentComparisonRecord.artifact)],
         }
       : null;
     const findingView = currentFindingRecord
@@ -490,9 +544,13 @@ export class StressLabService {
             isCurrent: isFindingCurrent(state, currentFindingRecord),
             comparisonFingerprint:
               currentFindingRecord.comparisonFingerprint,
-            evidenceDigest: currentFindingRecord.evidenceDigest,
-            selectedClaimIds: [...currentFindingRecord.selectedClaimIds],
-            review: review?.decision ?? "PENDING",
+            findingFingerprint:
+              currentFindingRecord.candidate.findingFingerprint,
+            selectedOutcome: currentFindingRecord.candidate.selectedOutcome,
+            emphasis: currentFindingRecord.candidate.emphasis,
+            claims: clonePlain(currentFindingRecord.candidate.claims),
+            caveats: clonePlain(currentFindingRecord.candidate.caveats),
+            review: review?.decision ?? "PENDING_REVIEW",
             ...(review?.feedback ? { feedback: review.feedback } : {}),
           };
         })()
@@ -517,6 +575,7 @@ export class StressLabService {
       progress: [...this.progress.values()]
         .map((entry) => clonePlain(entry))
         .sort((left, right) => compareCodeUnits(left.target, right.target)),
+      audit: state.audit.map((entry) => clonePlain(entry)),
       historical: {
         runIds: Object.keys(state.runs).sort(compareCodeUnits),
         comparisonIds: Object.keys(state.comparisons).sort(compareCodeUnits),
@@ -543,6 +602,8 @@ export class StressLabService {
   private appendAudit(
     current: StressLabApplicationState,
     nextRevision: number,
+    source: ApplicationAuditEntry["source"],
+    inputFingerprint: Fingerprint,
     action: ApplicationAuditEntry["action"],
     operationIdValue: string,
     target: string,
@@ -554,6 +615,8 @@ export class StressLabService {
       ...current.audit,
       {
         sequence: current.audit.length + 1,
+        source,
+        inputFingerprint,
         action,
         operationId: operationIdValue,
         target,
@@ -569,6 +632,8 @@ export class StressLabService {
   private commitExpected(
     expectedRevision: number,
     audit: {
+      readonly source: ApplicationAuditEntry["source"];
+      readonly inputFingerprint: Fingerprint;
       readonly action: ApplicationAuditEntry["action"];
       readonly operationId: string;
       readonly target: string;
@@ -590,6 +655,8 @@ export class StressLabService {
       audit: this.appendAudit(
         current,
         nextRevision,
+        audit.source,
+        audit.inputFingerprint,
         audit.action,
         audit.operationId,
         audit.target,
@@ -668,6 +735,8 @@ export class StressLabService {
         audit: this.appendAudit(
           current,
           nextRevision,
+          token.source,
+          token.inputFingerprint,
           audit.action,
           token.operationId,
           token.target,
@@ -775,7 +844,8 @@ export class StressLabService {
   private operation<Result>(
     operationIdValue: string,
     commandName: string,
-    commandFingerprint: Fingerprint,
+    source: ApplicationAuditEntry["source"],
+    inputFingerprint: Fingerprint,
     action: () => Promise<Result> | Result,
   ): Promise<Result> {
     operationId(operationIdValue);
@@ -783,7 +853,8 @@ export class StressLabService {
       {
         operationId: operationIdValue,
         commandName,
-        commandFingerprint,
+        source,
+        inputFingerprint,
       },
       action,
     );
@@ -851,7 +922,9 @@ export class StressLabService {
 
   configureScenario(
     command: ConfigureScenarioCommand,
+    context: StressLabInvocationContext,
   ): Promise<ScenarioMutationResult> {
+    assertTrustedInvocationContext(context);
     assertPlainExactKeys(
       command,
       ["operationId", "expectedRevision", "slot", "input"],
@@ -868,7 +941,7 @@ export class StressLabService {
         "The prepared input slot must match the configured application slot.",
       );
     }
-    const identity = commandIdentity("configureScenario", {
+    const inputFingerprint = commandInputFingerprint("configureScenario", {
       expectedRevision: command.expectedRevision,
       slot: command.slot,
       preparedInputFingerprint: preparedInput.fingerprint,
@@ -876,19 +949,26 @@ export class StressLabService {
     return this.operation(
       command.operationId,
       "configureScenario",
-      identity,
+      context.source,
+      inputFingerprint,
       () => {
+        const before = this.assertRevision(command.expectedRevision);
+        const anticipatedArtifactId = scenarioRevisionId(
+          `scenario-${command.slot}-r${before.scenarioRevisionCounters[command.slot] + 1}`,
+        );
         let transitionResult:
           | ReturnType<StressLabService["scenarioTransition"]>
           | undefined;
         const next = this.commitExpected(
           command.expectedRevision,
           {
+            source: context.source,
+            inputFingerprint,
             action: "SCENARIO_CONFIGURED",
             operationId: command.operationId,
             target: `SCENARIO:${command.slot}`,
             status: "COMPLETED",
-            artifactIds: [],
+            artifactIds: [anticipatedArtifactId],
           },
           (current, nextRevision) => {
             transitionResult = this.scenarioTransition(
@@ -923,7 +1003,9 @@ export class StressLabService {
 
   injectDisruption(
     command: InjectDisruptionCommand,
+    context: StressLabInvocationContext,
   ): Promise<ScenarioMutationResult> {
+    assertTrustedInvocationContext(context);
     assertPlainExactKeys(
       command,
       [
@@ -937,7 +1019,7 @@ export class StressLabService {
     operationId(command.operationId);
     assertExpectedRevision(command.expectedRevision);
     scenarioRevisionId(command.scenarioRevisionId);
-    const identity = commandIdentity("injectDisruption", {
+    const inputFingerprint = commandInputFingerprint("injectDisruption", {
       expectedRevision: command.expectedRevision,
       scenarioRevisionId: command.scenarioRevisionId,
       disruption: command.disruption,
@@ -945,19 +1027,30 @@ export class StressLabService {
     return this.operation(
       command.operationId,
       "injectDisruption",
-      identity,
+      context.source,
+      inputFingerprint,
       () => {
+        const before = this.assertRevision(command.expectedRevision);
+        const existingBefore = this.requireCurrentScenarioById(
+          before,
+          command.scenarioRevisionId,
+        );
+        const anticipatedArtifactId = scenarioRevisionId(
+          `scenario-${existingBefore.ref.slot}-r${before.scenarioRevisionCounters[existingBefore.ref.slot] + 1}`,
+        );
         let transitionResult:
           | ReturnType<StressLabService["scenarioTransition"]>
           | undefined;
         const next = this.commitExpected(
           command.expectedRevision,
           {
+            source: context.source,
+            inputFingerprint,
             action: "DISRUPTION_INJECTED",
             operationId: command.operationId,
             target: command.scenarioRevisionId,
             status: "COMPLETED",
-            artifactIds: [],
+            artifactIds: [anticipatedArtifactId],
           },
           (current, nextRevision) => {
             const existing = this.requireCurrentScenarioById(
@@ -1003,8 +1096,10 @@ export class StressLabService {
 
   runScenario(
     command: RunScenarioCommand,
+    context: StressLabInvocationContext,
     externalSignal?: { readonly aborted: boolean },
   ): Promise<RunMutationResult> {
+    assertTrustedInvocationContext(context);
     assertPlainExactKeys(
       command,
       ["operationId", "expectedRevision", "scenarioRevisionId"],
@@ -1013,17 +1108,23 @@ export class StressLabService {
     operationId(command.operationId);
     assertExpectedRevision(command.expectedRevision);
     scenarioRevisionId(command.scenarioRevisionId);
-    const identity = commandIdentity("runScenario", {
+    const inputFingerprint = commandInputFingerprint("runScenario", {
       expectedRevision: command.expectedRevision,
       scenarioRevisionId: command.scenarioRevisionId,
     });
-    return this.operation(command.operationId, "runScenario", identity, () =>
-      this.executeRun(command, externalSignal),
+    return this.operation(
+      command.operationId,
+      "runScenario",
+      context.source,
+      inputFingerprint,
+      () => this.executeRun(command, context, inputFingerprint, externalSignal),
     );
   }
 
   private async executeRun(
     command: RunScenarioCommand,
+    context: StressLabInvocationContext,
+    inputFingerprint: Fingerprint,
     externalSignal?: { readonly aborted: boolean },
   ): Promise<RunMutationResult> {
     const current = this.assertRevision(command.expectedRevision);
@@ -1036,6 +1137,8 @@ export class StressLabService {
     const artifactId = runId(`run-${scenario.ref.slot}-${current.nextRunSequence}`);
     const token = deepFreeze({
       operationId: command.operationId,
+      source: context.source,
+      inputFingerprint,
       target,
       generation,
       capturedScenarioRevisions: [clonePlain(scenario.ref)],
@@ -1060,6 +1163,8 @@ export class StressLabService {
       this.commitExpected(
         command.expectedRevision,
         {
+          source: context.source,
+          inputFingerprint,
           action: "RUN_STARTED",
           operationId: command.operationId,
           target,
@@ -1244,7 +1349,11 @@ export class StressLabService {
     );
   }
 
-  cancelRun(command: CancelRunCommand): Promise<MutationResult> {
+  cancelRun(
+    command: CancelRunCommand,
+    context: StressLabInvocationContext,
+  ): Promise<MutationResult> {
+    assertTrustedInvocationContext(context);
     assertPlainExactKeys(
       command,
       [
@@ -1259,51 +1368,59 @@ export class StressLabService {
     operationId(command.targetOperationId);
     assertExpectedRevision(command.expectedRevision);
     assertSlot(command.slot);
-    const identity = commandIdentity("cancelRun", {
+    const inputFingerprint = commandInputFingerprint("cancelRun", {
       expectedRevision: command.expectedRevision,
       slot: command.slot,
       targetOperationId: command.targetOperationId,
     });
-    return this.operation(command.operationId, "cancelRun", identity, () => {
-      const target = `RUN:${command.slot}` as const;
-      const next = this.commitExpected(
-        command.expectedRevision,
-        {
-          action: "RUN_CANCELLED",
+    return this.operation(
+      command.operationId,
+      "cancelRun",
+      context.source,
+      inputFingerprint,
+      () => {
+        const target = `RUN:${command.slot}` as const;
+        const next = this.commitExpected(
+          command.expectedRevision,
+          {
+            source: context.source,
+            inputFingerprint,
+            action: "RUN_CANCELLED",
+            operationId: command.operationId,
+            target: `${target}:${command.targetOperationId}`,
+            status: "CANCELLED",
+            artifactIds: [],
+            safeErrorCode: "OPERATION_CANCELLED",
+          },
+          (current) => {
+            const active = current.activeOperations[target];
+            if (!active || active.operationId !== command.targetOperationId) {
+              throw new StressLabApplicationError(
+                "INVALID_STATE_TRANSITION",
+                target,
+                `Run operation ${command.targetOperationId} is not active for Scenario ${command.slot}.`,
+              );
+            }
+            const activeOperations = { ...current.activeOperations };
+            delete activeOperations[target];
+            return {
+              ...current,
+              activeOperations,
+              targetGenerations: {
+                ...current.targetGenerations,
+                [target]: this.bumpGeneration(current, target),
+              },
+            };
+          },
+        );
+        this.abortOperation(command.targetOperationId, "CANCELLED");
+        return deepFreeze({
           operationId: command.operationId,
-          target: `${target}:${command.targetOperationId}`,
-          status: "CANCELLED",
-          artifactIds: [],
-          safeErrorCode: "OPERATION_CANCELLED",
-        },
-        (current) => {
-          const active = current.activeOperations[target];
-          if (!active || active.operationId !== command.targetOperationId) {
-            throw new StressLabApplicationError(
-              "INVALID_STATE_TRANSITION",
-              target,
-              `Run operation ${command.targetOperationId} is not active for Scenario ${command.slot}.`,
-            );
-          }
-          const activeOperations = { ...current.activeOperations };
-          delete activeOperations[target];
-          return {
-            ...current,
-            activeOperations,
-            targetGenerations: {
-              ...current.targetGenerations,
-              [target]: this.bumpGeneration(current, target),
-            },
-          };
-        },
-      );
-      this.abortOperation(command.targetOperationId, "CANCELLED");
-      return deepFreeze({
-        operationId: command.operationId,
-        stateRevision: next.revision,
-        status: "CANCELLED" as const,
-      });
-    });
+          stateRevision: next.revision,
+          status: "CANCELLED" as const,
+        });
+      },
+    );
   }
 
   private requireCurrentRunById(
@@ -1331,7 +1448,9 @@ export class StressLabService {
 
   compareScenarios(
     command: CompareScenariosCommand,
+    context: StressLabInvocationContext,
   ): Promise<ComparisonMutationResult> {
+    assertTrustedInvocationContext(context);
     assertPlainExactKeys(
       command,
       ["operationId", "expectedRevision", "leftRunId", "rightRunId"],
@@ -1341,7 +1460,7 @@ export class StressLabService {
     assertExpectedRevision(command.expectedRevision);
     runId(command.leftRunId);
     runId(command.rightRunId);
-    const identity = commandIdentity("compareScenarios", {
+    const inputFingerprint = commandInputFingerprint("compareScenarios", {
       expectedRevision: command.expectedRevision,
       leftRunId: command.leftRunId,
       rightRunId: command.rightRunId,
@@ -1349,13 +1468,16 @@ export class StressLabService {
     return this.operation(
       command.operationId,
       "compareScenarios",
-      identity,
-      () => this.executeComparison(command),
+      context.source,
+      inputFingerprint,
+      () => this.executeComparison(command, context, inputFingerprint),
     );
   }
 
   private async executeComparison(
     command: CompareScenariosCommand,
+    context: StressLabInvocationContext,
+    inputFingerprint: Fingerprint,
   ): Promise<ComparisonMutationResult> {
     const current = this.assertRevision(command.expectedRevision);
     const left = this.requireCurrentRunById(current, command.leftRunId);
@@ -1367,6 +1489,8 @@ export class StressLabService {
     );
     const token = deepFreeze({
       operationId: command.operationId,
+      source: context.source,
+      inputFingerprint,
       target,
       generation,
       capturedScenarioRevisions: [
@@ -1378,6 +1502,8 @@ export class StressLabService {
     this.commitExpected(
       command.expectedRevision,
       {
+        source: context.source,
+        inputFingerprint,
         action: "COMPARISON_STARTED",
         operationId: command.operationId,
         target,
@@ -1543,134 +1669,128 @@ export class StressLabService {
     return record;
   }
 
-  stageFinding(command: StageFindingCommand): Promise<FindingMutationResult> {
+  stageFinding(
+    command: StageFindingCommand,
+    context: StressLabInvocationContext,
+  ): Promise<FindingMutationResult> {
+    assertTrustedInvocationContext(context);
     assertPlainExactKeys(
       command,
       [
         "operationId",
         "expectedRevision",
         "comparisonId",
-        "selectedClaimIds",
+        "selectedOutcome",
+        "emphasis",
       ],
       "stageFinding",
     );
     operationId(command.operationId);
     assertExpectedRevision(command.expectedRevision);
     comparisonId(command.comparisonId);
-    if (
-      !Array.isArray(command.selectedClaimIds) ||
-      command.selectedClaimIds.length < 1 ||
-      command.selectedClaimIds.length > 3 ||
-      command.selectedClaimIds.some(
-        (value) => typeof value !== "string" || value.length > 96,
-      ) ||
-      new Set(command.selectedClaimIds).size !== command.selectedClaimIds.length
-    ) {
-      throw new StressLabApplicationError(
-        "INVALID_COMMAND",
-        "selectedClaimIds",
-        "Select one to three unique bounded claim identifiers.",
-      );
-    }
-    const selectedClaimIds = [...command.selectedClaimIds];
-    const identity = commandIdentity("stageFinding", {
+    assertFindingOutcome(command.selectedOutcome);
+    assertFindingEmphasis(command.emphasis);
+    const inputFingerprint = commandInputFingerprint("stageFinding", {
       expectedRevision: command.expectedRevision,
       comparisonId: command.comparisonId,
-      selectedClaimIds,
+      selectedOutcome: command.selectedOutcome,
+      emphasis: command.emphasis,
     });
-    return this.operation(command.operationId, "stageFinding", identity, () => {
-      let record: StagedFindingRecord | undefined;
-      const next = this.commitExpected(
-        command.expectedRevision,
-        {
-          action: "FINDING_STAGED",
-          operationId: command.operationId,
-          target: command.comparisonId,
-          status: "COMPLETED",
-          artifactIds: [],
-        },
-        (current, nextRevision) => {
-          const comparison = this.requireCurrentComparisonById(
-            current,
-            command.comparisonId,
-          );
-          const availableIds = claimIds(comparison.artifact);
-          const selectedClaims = selectedClaimIds.map((id) => {
-            const index = availableIds.indexOf(id);
-            if (index < 0) {
-              throw new StressLabApplicationError(
-                "INVALID_COMMAND",
-                "selectedClaimIds",
-                `Claim ${id} is not present in the trusted comparison.`,
-              );
-            }
-            return comparison.artifact.claims[index];
-          });
-          const id = findingId(`finding-${current.nextFindingSequence}`);
-          const evidenceDigest = fingerprintCanonical(FINDING_EVIDENCE_SCOPE, {
-            comparisonFingerprint: comparison.artifact.comparisonFingerprint,
-            selectedClaimIds,
-            selectedClaims,
-          });
-          record = deepFreeze({
-            id,
-            comparisonId: comparison.id,
-            comparisonFingerprint: comparison.artifact.comparisonFingerprint,
-            scenarioRevisionRefs: [
-              clonePlain(comparison.scenarioRevisionRefs[0]),
-              clonePlain(comparison.scenarioRevisionRefs[1]),
-            ],
-            runIdentities: [
-              {
-                inputFingerprint: comparison.artifact.left.inputFingerprint,
-                eventLedgerFingerprint:
-                  comparison.artifact.left.eventLedgerFingerprint,
-                resultFingerprint: comparison.artifact.left.resultFingerprint,
-              },
-              {
-                inputFingerprint: comparison.artifact.right.inputFingerprint,
-                eventLedgerFingerprint:
-                  comparison.artifact.right.eventLedgerFingerprint,
-                resultFingerprint: comparison.artifact.right.resultFingerprint,
-              },
-            ],
-            selectedClaimIds,
-            selectedClaims,
-            evidenceDigest,
-            stagedAtApplicationRevision: nextRevision,
-          });
-          return {
-            ...current,
-            nextFindingSequence: current.nextFindingSequence + 1,
-            findings: { ...current.findings, [id]: record },
-            reviews: {
-              ...current.reviews,
-              [id]: deepFreeze({
-                findingId: id,
-                decision: "PENDING" as const,
-              }),
-            },
-            currentFindingId: id,
-          };
-        },
-      );
-      if (!record) {
-        throw new StressLabApplicationError(
-          "INVALID_STATE_TRANSITION",
-          command.comparisonId,
-          "The finding evidence was not staged.",
+    return this.operation(
+      command.operationId,
+      "stageFinding",
+      context.source,
+      inputFingerprint,
+      () => {
+        const before = this.assertRevision(command.expectedRevision);
+        const anticipatedArtifactId = findingId(
+          `finding-${before.nextFindingSequence}`,
         );
-      }
-      return deepFreeze({
-        operationId: command.operationId,
-        stateRevision: next.revision,
-        status: "COMPLETED" as const,
-        artifactId: record.id,
-        comparisonFingerprint: record.comparisonFingerprint,
-        evidenceDigest: record.evidenceDigest,
-        selectedClaimIds: [...record.selectedClaimIds],
-      });
-    });
+        let record: StagedFindingRecord | undefined;
+        const next = this.commitExpected(
+          command.expectedRevision,
+          {
+            source: context.source,
+            inputFingerprint,
+            action: "FINDING_STAGED",
+            operationId: command.operationId,
+            target: command.comparisonId,
+            status: "COMPLETED",
+            artifactIds: [anticipatedArtifactId],
+          },
+          (current, nextRevision) => {
+            const comparison = this.requireCurrentComparisonById(
+              current,
+              command.comparisonId,
+            );
+            const candidate = createFindingCandidate({
+              comparison: comparison.artifact,
+              selectedOutcome: command.selectedOutcome,
+              emphasis: command.emphasis,
+            });
+            const id = findingId(`finding-${current.nextFindingSequence}`);
+            record = deepFreeze({
+              id,
+              comparisonId: comparison.id,
+              comparisonFingerprint: comparison.artifact.comparisonFingerprint,
+              scenarioRevisionRefs: [
+                clonePlain(comparison.scenarioRevisionRefs[0]),
+                clonePlain(comparison.scenarioRevisionRefs[1]),
+              ],
+              runIdentities: [
+                {
+                  inputFingerprint: comparison.artifact.left.inputFingerprint,
+                  eventLedgerFingerprint:
+                    comparison.artifact.left.eventLedgerFingerprint,
+                  resultFingerprint: comparison.artifact.left.resultFingerprint,
+                },
+                {
+                  inputFingerprint: comparison.artifact.right.inputFingerprint,
+                  eventLedgerFingerprint:
+                    comparison.artifact.right.eventLedgerFingerprint,
+                  resultFingerprint:
+                    comparison.artifact.right.resultFingerprint,
+                },
+              ],
+              candidate,
+              stagedAtApplicationRevision: nextRevision,
+            });
+            return {
+              ...current,
+              nextFindingSequence: current.nextFindingSequence + 1,
+              findings: { ...current.findings, [id]: record },
+              reviews: {
+                ...current.reviews,
+                [id]: deepFreeze({
+                  findingId: id,
+                  decision: "PENDING_REVIEW" as const,
+                }),
+              },
+              currentFindingId: id,
+            };
+          },
+        );
+        if (!record) {
+          throw new StressLabApplicationError(
+            "INVALID_STATE_TRANSITION",
+            command.comparisonId,
+            "The finding evidence was not staged.",
+          );
+        }
+        return deepFreeze({
+          operationId: command.operationId,
+          stateRevision: next.revision,
+          status: "COMPLETED" as const,
+          artifactId: record.id,
+          comparisonFingerprint: record.comparisonFingerprint,
+          findingFingerprint: record.candidate.findingFingerprint,
+          selectedOutcome: record.candidate.selectedOutcome,
+          emphasis: record.candidate.emphasis,
+          claims: clonePlain(record.candidate.claims),
+          caveats: clonePlain(record.candidate.caveats),
+        });
+      },
+    );
   }
 
   private requireCurrentFindingById(
@@ -1694,7 +1814,7 @@ export class StressLabService {
       );
     }
     const review = state.reviews[findingIdValue];
-    if (!review || review.decision !== "PENDING") {
+    if (!review || review.decision !== "PENDING_REVIEW") {
       throw new StressLabApplicationError(
         "INVALID_STATE_TRANSITION",
         findingIdValue,
@@ -1704,7 +1824,12 @@ export class StressLabService {
     return record;
   }
 
-  acceptFinding(command: AcceptFindingCommand): Promise<MutationResult> {
+  acceptFinding(
+    command: AcceptFindingCommand,
+    context: StressLabInvocationContext,
+  ): Promise<MutationResult> {
+    assertTrustedInvocationContext(context);
+    assertHumanInvocation(context, "acceptFinding");
     assertPlainExactKeys(
       command,
       ["operationId", "expectedRevision", "findingId"],
@@ -1713,16 +1838,25 @@ export class StressLabService {
     operationId(command.operationId);
     assertExpectedRevision(command.expectedRevision);
     findingId(command.findingId);
-    const identity = commandIdentity("acceptFinding", {
+    const inputFingerprint = commandInputFingerprint("acceptFinding", {
       expectedRevision: command.expectedRevision,
       findingId: command.findingId,
     });
-    return this.operation(command.operationId, "acceptFinding", identity, () =>
-      this.reviewFinding(command, "ACCEPTED"),
+    return this.operation(
+      command.operationId,
+      "acceptFinding",
+      context.source,
+      inputFingerprint,
+      () => this.reviewFinding(command, context, inputFingerprint, "ACCEPTED"),
     );
   }
 
-  challengeFinding(command: ChallengeFindingCommand): Promise<MutationResult> {
+  challengeFinding(
+    command: ChallengeFindingCommand,
+    context: StressLabInvocationContext,
+  ): Promise<MutationResult> {
+    assertTrustedInvocationContext(context);
+    assertHumanInvocation(context, "challengeFinding");
     assertPlainExactKeys(
       command,
       ["operationId", "expectedRevision", "findingId", "feedback"],
@@ -1732,7 +1866,7 @@ export class StressLabService {
     assertExpectedRevision(command.expectedRevision);
     findingId(command.findingId);
     const feedback = assertBoundedFeedback(command.feedback);
-    const identity = commandIdentity("challengeFinding", {
+    const inputFingerprint = commandInputFingerprint("challengeFinding", {
       expectedRevision: command.expectedRevision,
       findingId: command.findingId,
       feedback,
@@ -1740,19 +1874,31 @@ export class StressLabService {
     return this.operation(
       command.operationId,
       "challengeFinding",
-      identity,
-      () => this.reviewFinding(command, "CHALLENGED", feedback),
+      context.source,
+      inputFingerprint,
+      () =>
+        this.reviewFinding(
+          command,
+          context,
+          inputFingerprint,
+          "CHALLENGED",
+          feedback,
+        ),
     );
   }
 
   private reviewFinding(
     command: AcceptFindingCommand | ChallengeFindingCommand,
+    context: StressLabInvocationContext,
+    inputFingerprint: Fingerprint,
     decision: "ACCEPTED" | "CHALLENGED",
     feedback?: string,
   ): MutationResult {
     const next = this.commitExpected(
       command.expectedRevision,
       {
+        source: context.source,
+        inputFingerprint,
         action:
           decision === "ACCEPTED"
             ? "FINDING_ACCEPTED"
@@ -1787,7 +1933,12 @@ export class StressLabService {
     });
   }
 
-  resetLab(command: ResetLabCommand): Promise<MutationResult> {
+  resetLab(
+    command: ResetLabCommand,
+    context: StressLabInvocationContext,
+  ): Promise<MutationResult> {
+    assertTrustedInvocationContext(context);
+    assertHumanInvocation(context, "resetLab");
     assertPlainExactKeys(
       command,
       ["operationId", "expectedRevision"],
@@ -1795,60 +1946,68 @@ export class StressLabService {
     );
     operationId(command.operationId);
     assertExpectedRevision(command.expectedRevision);
-    const identity = commandIdentity("resetLab", {
+    const inputFingerprint = commandInputFingerprint("resetLab", {
       expectedRevision: command.expectedRevision,
     });
-    return this.operation(command.operationId, "resetLab", identity, () => {
-      const golden = createGoldenExperimentInputs();
-      const current = this.assertRevision(command.expectedRevision);
-      const superseded = Object.values(current.activeOperations)
-        .filter((entry): entry is OperationToken => Boolean(entry))
-        .map((entry) => entry.operationId);
-      const next = this.commitExpected(
-        command.expectedRevision,
-        {
-          action: "LAB_RESET",
+    return this.operation(
+      command.operationId,
+      "resetLab",
+      context.source,
+      inputFingerprint,
+      () => {
+        const golden = createGoldenExperimentInputs();
+        const current = this.assertRevision(command.expectedRevision);
+        const superseded = Object.values(current.activeOperations)
+          .filter((entry): entry is OperationToken => Boolean(entry))
+          .map((entry) => entry.operationId);
+        const next = this.commitExpected(
+          command.expectedRevision,
+          {
+            source: context.source,
+            inputFingerprint,
+            action: "LAB_RESET",
+            operationId: command.operationId,
+            target: "LAB",
+            status: "COMPLETED",
+            artifactIds: [],
+          },
+          (state, nextRevision) => {
+            const first = this.scenarioTransition(
+              state,
+              nextRevision,
+              "A",
+              golden.runs.A,
+            );
+            const second = this.scenarioTransition(
+              first.state,
+              nextRevision,
+              "B",
+              golden.runs.B,
+            );
+            return {
+              ...second.state,
+              currentRunIds: {},
+              currentComparisonId: undefined,
+              currentFindingId: undefined,
+              activeOperations: {},
+              targetGenerations: {
+                ...second.state.targetGenerations,
+                "RUN:A": this.bumpGeneration(state, "RUN:A"),
+                "RUN:B": this.bumpGeneration(state, "RUN:B"),
+                COMPARISON: this.bumpGeneration(state, "COMPARISON"),
+              },
+            };
+          },
+        );
+        for (const operation of superseded) {
+          this.abortOperation(operation, "SUPERSEDED");
+        }
+        return deepFreeze({
           operationId: command.operationId,
-          target: "LAB",
-          status: "COMPLETED",
-          artifactIds: [],
-        },
-        (state, nextRevision) => {
-          const first = this.scenarioTransition(
-            state,
-            nextRevision,
-            "A",
-            golden.runs.A,
-          );
-          const second = this.scenarioTransition(
-            first.state,
-            nextRevision,
-            "B",
-            golden.runs.B,
-          );
-          return {
-            ...second.state,
-            currentRunIds: {},
-            currentComparisonId: undefined,
-            currentFindingId: undefined,
-            activeOperations: {},
-            targetGenerations: {
-              ...second.state.targetGenerations,
-              "RUN:A": this.bumpGeneration(state, "RUN:A"),
-              "RUN:B": this.bumpGeneration(state, "RUN:B"),
-              COMPARISON: this.bumpGeneration(state, "COMPARISON"),
-            },
-          };
-        },
-      );
-      for (const operation of superseded) {
-        this.abortOperation(operation, "SUPERSEDED");
-      }
-      return deepFreeze({
-        operationId: command.operationId,
-        stateRevision: next.revision,
-        status: "COMPLETED" as const,
-      });
-    });
+          stateRevision: next.revision,
+          status: "COMPLETED" as const,
+        });
+      },
+    );
   }
 }

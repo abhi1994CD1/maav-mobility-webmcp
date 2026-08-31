@@ -1,7 +1,11 @@
 import type {
   DisruptionSpecification,
-  EvidenceClaim,
   EventLedgerEnvelope,
+  FindingCandidateArtifact,
+  FindingCaveat,
+  FindingEmphasis,
+  FindingEvidenceClaim,
+  FindingSelectedOutcome,
   Fingerprint,
   PreparedRunInput,
   RunResultArtifact,
@@ -13,6 +17,7 @@ import type {
 } from "@/domain/stress-lab/types";
 
 export type StressLabApplicationErrorCode =
+  | "HUMAN_AUTHORITY_REQUIRED"
   | "IDEMPOTENCY_CONFLICT"
   | "INVALID_COMMAND"
   | "INVALID_STATE_TRANSITION"
@@ -76,10 +81,26 @@ export interface ScenarioRevisionRecord {
   readonly createdAtApplicationRevision: number;
 }
 
+export type StressLabActionSource = "HUMAN_UI" | "WEBMCP";
+
+export interface StressLabInvocationContext {
+  readonly source: StressLabActionSource;
+}
+
+export const HUMAN_UI_INVOCATION_CONTEXT = Object.freeze({
+  source: "HUMAN_UI",
+} as const satisfies StressLabInvocationContext);
+
+export const WEBMCP_INVOCATION_CONTEXT = Object.freeze({
+  source: "WEBMCP",
+} as const satisfies StressLabInvocationContext);
+
 export type OperationTarget = `RUN:${ScenarioSlot}` | "COMPARISON";
 
 export interface OperationToken {
   readonly operationId: string;
+  readonly source: StressLabActionSource;
+  readonly inputFingerprint: Fingerprint;
   readonly target: OperationTarget;
   readonly generation: number;
   readonly capturedScenarioRevisions: readonly ScenarioRevisionRef[];
@@ -121,21 +142,21 @@ export interface StagedFindingRecord {
     readonly eventLedgerFingerprint: Fingerprint;
     readonly resultFingerprint: Fingerprint;
   }[];
-  readonly selectedClaimIds: readonly string[];
-  readonly selectedClaims: readonly EvidenceClaim[];
-  readonly evidenceDigest: Fingerprint;
+  readonly candidate: FindingCandidateArtifact;
   readonly stagedAtApplicationRevision: number;
 }
 
 export interface HumanReviewRecord {
   readonly findingId: string;
-  readonly decision: "PENDING" | "ACCEPTED" | "CHALLENGED";
+  readonly decision: "PENDING_REVIEW" | "ACCEPTED" | "CHALLENGED";
   readonly feedback?: string;
   readonly decidedAtApplicationRevision?: number;
 }
 
 export interface ApplicationAuditEntry {
   readonly sequence: number;
+  readonly source: StressLabActionSource;
+  readonly inputFingerprint: Fingerprint;
   readonly action:
     | "SCENARIO_CONFIGURED"
     | "DISRUPTION_INJECTED"
@@ -269,7 +290,8 @@ export interface StageFindingCommand {
   readonly operationId: string;
   readonly expectedRevision: number;
   readonly comparisonId: string;
-  readonly selectedClaimIds: readonly string[];
+  readonly selectedOutcome: FindingSelectedOutcome;
+  readonly emphasis: FindingEmphasis;
 }
 
 export interface AcceptFindingCommand {
@@ -319,8 +341,11 @@ export interface ComparisonMutationResult extends MutationResult {
 export interface FindingMutationResult extends MutationResult {
   readonly artifactId: string;
   readonly comparisonFingerprint: Fingerprint;
-  readonly evidenceDigest: Fingerprint;
-  readonly selectedClaimIds: readonly string[];
+  readonly findingFingerprint: Fingerprint;
+  readonly selectedOutcome: FindingSelectedOutcome;
+  readonly emphasis: FindingEmphasis;
+  readonly claims: readonly FindingEvidenceClaim[];
+  readonly caveats: readonly FindingCaveat[];
 }
 
 export interface StressLabStateView {
@@ -357,7 +382,6 @@ export interface StressLabStateView {
         readonly id: string;
         readonly isCurrent: boolean;
         readonly comparisonFingerprint: Fingerprint;
-        readonly claimIds: readonly string[];
       }
     | null;
   readonly currentFinding:
@@ -365,14 +389,18 @@ export interface StressLabStateView {
         readonly id: string;
         readonly isCurrent: boolean;
         readonly comparisonFingerprint: Fingerprint;
-        readonly evidenceDigest: Fingerprint;
-        readonly selectedClaimIds: readonly string[];
+        readonly findingFingerprint: Fingerprint;
+        readonly selectedOutcome: FindingSelectedOutcome;
+        readonly emphasis: FindingEmphasis;
+        readonly claims: readonly FindingEvidenceClaim[];
+        readonly caveats: readonly FindingCaveat[];
         readonly review: HumanReviewRecord["decision"];
         readonly feedback?: string;
       }
     | null;
   readonly activeOperations: readonly OperationToken[];
   readonly progress: readonly OperationProgress[];
+  readonly audit: readonly ApplicationAuditEntry[];
   readonly historical: {
     readonly runIds: readonly string[];
     readonly comparisonIds: readonly string[];

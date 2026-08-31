@@ -4,9 +4,10 @@
 
 This document owns target system boundaries, dependency direction, artifact
 flow, state ownership, adapter responsibilities, and atomic command behavior.
-Gate 4 implements the deterministic headless domain slice; the current browser
-runtime remains separate until later gated slices integrate it through the
-application boundary.
+Gates 3–5 implement deterministic inputs, verified simulations, and trusted
+comparisons. Gate 6 implements the headless application authority described
+below; the current browser runtime remains separate until later gated slices
+integrate it through that boundary.
 
 ## Architectural style
 
@@ -118,7 +119,7 @@ decision. A hash proves byte identity, not domain truth.
 
 ### Application
 
-One `StressLabService`-shaped boundary owns:
+One framework-independent `StressLabService` boundary owns:
 
 - queries and commands shared by manual UI and WebMCP;
 - complete validation and normalization before mutation;
@@ -132,11 +133,94 @@ One `StressLabService`-shaped boundary owns:
 
 No adapter may bypass this service to mutate revisioned state.
 
+Gate 6 exposes the headless commands `configureScenario`,
+`injectDisruption`, `runScenario`, `cancelRun`, `compareScenarios`, and
+`stageFinding`, plus the human-only `acceptFinding`, `challengeFinding`, and
+`resetLab` commands. `readLabState` returns a deeply frozen projection rather
+than internal repository objects. This is an application API, not the Gate 7
+WebMCP schema or tool export.
+
+### Gate 6 authority model
+
+Application currentness uses two independent authorities:
+
+```text
+ScenarioRevisionRef
+  = slot + monotonically increasing revision + prepared-input fingerprint
+
+OperationToken
+  = caller operation ID + target + target generation
+    + captured ScenarioRevisionRefs + reserved artifact ID
+```
+
+A fingerprint proves content identity. A scenario revision proves that the
+content is still authoritative. Replacing a scenario with byte-identical input
+therefore creates a new revision and prevents edit/revert ABA publication.
+
+Starting, restarting, cancelling, resetting, or invalidating work advances the
+target generation. Run A, Run B, and comparison have separate targets. Every
+progress report and terminal transition carries the originating token; a token
+whose operation ID or generation no longer owns the target is ignored or fails
+as stale. Progress is an ephemeral projection and does not increment the
+application revision, enter audit evidence, or affect a trusted fingerprint.
+
+Every mutating command requires an expected application revision and a
+caller-supplied operation ID. A tab-scoped operation cache installs a pending
+record before command execution so same-ID/same-command retries—including
+subscriber re-entry—share one terminal promise. Reusing the ID with a different
+canonical command fails as `IDEMPOTENCY_CONFLICT`. Application command
+identities, revisions, generations, operation IDs, cancellation state, and
+review feedback are excluded from Gate 3–5 evidence.
+
+Run publication follows one guarded path:
+
+1. capture the current scenario revision and immutable prepared input;
+2. reserve a new target generation and publish the active token;
+3. compute outside the repository transition;
+4. verify input, ledger, every snapshot, terminal state, and result through
+   `verifyTrustedSimulationResult`;
+5. re-enter one compare-and-swap transition;
+6. recheck token ownership, generation, cancellation, scenario revision, and
+   prepared-input fingerprint;
+7. publish one complete run record and current pointer.
+
+Cancellation may avoid computation, but token/generation and revision checks
+are the correctness boundary. A cancelled, failed, superseded, or stale run
+publishes no partial result and cannot erase the last completed current run for
+the same unchanged scenario. This is exactly-once accepted publication inside
+one process and repository instance; the project makes no distributed
+exactly-once, durable-delivery, or outbox claim.
+
+The service stores the exact same-process `VerifiedRunResultArtifact` returned
+by Gate 4 and passes that exact object to `createTrustedRunComparison`. It never
+clones, casts, serializes, hydrates, or reconstructs attestation from a hash.
+Persistence or transport must rerun the complete Gate 4 verifier and is outside
+Gate 6.
+
+A comparison publishes only while both captured scenario revisions and both
+exact current run objects still match. Gate 5 owns compatibility and arithmetic;
+`StressLabService` propagates `StressLabComparisonError` unchanged and commits
+no partial comparison. A new current run, either scenario edit, or reset makes
+dependent comparison and finding pointers stale transitively while immutable
+historical records remain inspectable.
+
+Finding staging accepts only a current comparison ID and one to three claim IDs
+already present in its bounded claim set. It copies no caller-supplied KPI,
+delta, constraint outcome, score, or winner conclusion. The staged evidence
+digest binds the comparison fingerprint and selected trusted claims. Accept and
+Challenge update a separate application review record only while that finding
+is current; they cannot alter run, comparison, claim, or evidence identities and
+do not dispatch or execute anything.
+
 ### Repository adapter
 
 The application depends on a repository port, not Zustand. The H0
 infrastructure adapter keeps tab-scoped in-memory/session state and supports an
 atomic compare-and-swap commit.
+
+Gate 6 defines this port and uses a controlled in-memory test adapter. The
+Zustand implementation remains Gate 8 work; neither the domain nor the Gate 6
+service imports Zustand.
 
 Repository responsibilities:
 

@@ -8,6 +8,8 @@ import {
   WEBMCP_INVOCATION_CONTEXT,
   type CompareScenariosCommand,
   type RunExecutionContext,
+  type StressLabApplicationRepository,
+  type StressLabApplicationState,
   type StressLabComparisonExecutor,
   type StressLabInvocationContext,
   type StressLabSimulationExecutor,
@@ -185,6 +187,31 @@ class ControlledComparisonExecutor implements StressLabComparisonExecutor {
   }
 }
 
+class InterleavingRepository implements StressLabApplicationRepository {
+  private readonly inner = new StressLabTestRepository();
+  beforeNextCompareAndSwap?: () => void;
+
+  getState(): StressLabApplicationState {
+    return this.inner.getState();
+  }
+
+  compareAndSwap(
+    expectedRevision: number,
+    nextState: StressLabApplicationState,
+  ): boolean {
+    const hook = this.beforeNextCompareAndSwap;
+    this.beforeNextCompareAndSwap = undefined;
+    hook?.();
+    return this.inner.compareAndSwap(expectedRevision, nextState);
+  }
+
+  subscribe(
+    listener: (state: StressLabApplicationState) => void,
+  ): () => void {
+    return this.inner.subscribe(listener);
+  }
+}
+
 const IMMEDIATE_SIMULATION_EXECUTOR: StressLabSimulationExecutor = {
   async execute(preparedInput, context) {
     context.reportProgress(0, 1);
@@ -306,6 +333,24 @@ async function createCurrentTinyRuns(options?: {
   const runA = await runCurrent(service, "A", "run-a");
   const runB = await runCurrent(service, "B", "run-b");
   return { repository, service, left, right, runA, runB };
+}
+
+async function createCurrentTinyFinding() {
+  const harness = await createCurrentTinyRuns();
+  const comparison = await harness.service.compareScenarios({
+    operationId: "current-finding-comparison",
+    expectedRevision: harness.service.readLabState().revision,
+    leftRunId: harness.runA.artifactId,
+    rightRunId: harness.runB.artifactId,
+  }, HUMAN_UI_INVOCATION_CONTEXT);
+  const finding = await harness.service.stageFinding({
+    operationId: "current-finding-stage",
+    expectedRevision: harness.service.readLabState().revision,
+    comparisonId: comparison.artifactId,
+    selectedOutcome: "TRADE_OFF",
+    emphasis: "BALANCED",
+  }, WEBMCP_INVOCATION_CONTEXT);
+  return { ...harness, comparison, finding };
 }
 
 describe("Gate 6 revision-safe application authority", () => {
@@ -714,6 +759,356 @@ describe("Gate 6 revision-safe application authority", () => {
     );
     expect(service.readLabState().revision).toBe(1);
     expect(repository.getState()).toBe(beforeWrongRevision);
+  });
+
+  it("returns immutable empty invalidation evidence and preserves it on exact mutation retries", async () => {
+    const repository = new StressLabTestRepository();
+    const service = new StressLabService(
+      repository,
+      IMMEDIATE_SIMULATION_EXECUTOR,
+    );
+    const prepared = inputForSlot(createTinyTriangleRun(), "A");
+    const command = {
+      operationId: "empty-invalidation-config",
+      expectedRevision: 0,
+      slot: "A" as const,
+      input: prepared.input,
+    };
+
+    const firstPromise = service.configureScenario(
+      command,
+      HUMAN_UI_INVOCATION_CONTEXT,
+    );
+    const duplicatePromise = service.configureScenario(
+      command,
+      HUMAN_UI_INVOCATION_CONTEXT,
+    );
+    const first = await firstPromise;
+    expect(await duplicatePromise).toBe(first);
+    expect(first.invalidatedArtifactIds).toEqual([]);
+    expect(Object.isFrozen(first.invalidatedArtifactIds)).toBe(true);
+    expect(() => {
+      (first.invalidatedArtifactIds as unknown as string[]).push("run-forged");
+    }).toThrow();
+    expect(repository.getState().revision).toBe(1);
+    expect(repository.getState().audit).toHaveLength(1);
+    expect(repository.getState().audit[0].artifactIds).toEqual([
+      first.artifactId,
+    ]);
+    expect(first.invalidatedArtifactIds).not.toBe(
+      repository.getState().audit[0].artifactIds,
+    );
+
+    const beforeStale = repository.getState();
+    await expectApplicationError(
+      service.configureScenario({
+        ...command,
+        operationId: "empty-invalidation-stale",
+      }, HUMAN_UI_INVOCATION_CONTEXT),
+      "REVISION_CONFLICT",
+    );
+    expect(repository.getState()).toBe(beforeStale);
+    await expectApplicationError(
+      service.configureScenario(command, WEBMCP_INVOCATION_CONTEXT),
+      "IDEMPOTENCY_CONFLICT",
+    );
+    expect(repository.getState()).toBe(beforeStale);
+  });
+
+  it("atomically reports run-comparison-finding invalidation while preserving unrelated and historical evidence", async () => {
+    const harness = await createCurrentTinyFinding();
+    const priorReview = harness.repository.getState().reviews[
+      harness.finding.artifactId
+    ];
+    const beforeRevision = harness.repository.getState().revision;
+    const beforeAuditLength = harness.repository.getState().audit.length;
+
+    const edited = await configure(
+      harness.service,
+      harness.left,
+      "invalidate-current-a",
+    );
+    const expectedInvalidated = [
+      harness.runA.artifactId,
+      harness.comparison.artifactId,
+      harness.finding.artifactId,
+    ];
+    expect(edited.invalidatedArtifactIds).toEqual(expectedInvalidated);
+    expect(Object.isFrozen(edited.invalidatedArtifactIds)).toBe(true);
+    const state = harness.repository.getState();
+    expect(state.revision).toBe(beforeRevision + 1);
+    expect(state.audit).toHaveLength(beforeAuditLength + 1);
+    expect(state.audit.at(-1)?.artifactIds).toEqual([
+      edited.artifactId,
+      ...expectedInvalidated,
+    ]);
+    expect(edited.invalidatedArtifactIds).not.toBe(
+      state.audit.at(-1)?.artifactIds,
+    );
+    expect(state.currentRunIds.A).toBeUndefined();
+    expect(state.currentRunIds.B).toBe(harness.runB.artifactId);
+    expect(state.currentComparisonId).toBeUndefined();
+    expect(state.currentFindingId).toBeUndefined();
+    expect(state.runs[harness.runA.artifactId]).toBeDefined();
+    expect(state.runs[harness.runB.artifactId]).toBeDefined();
+    expect(state.comparisons[harness.comparison.artifactId]).toBeDefined();
+    expect(state.findings[harness.finding.artifactId]).toBeDefined();
+    expect(state.reviews[harness.finding.artifactId]).toBe(priorReview);
+    expect(edited.invalidatedArtifactIds).not.toContain(harness.runB.artifactId);
+
+    const retry = await harness.service.configureScenario({
+      operationId: "invalidate-current-a",
+      expectedRevision: beforeRevision,
+      slot: "A",
+      input: harness.left.input,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    expect(retry).toBe(edited);
+    expect(retry.invalidatedArtifactIds).toEqual(expectedInvalidated);
+    expect(harness.repository.getState()).toBe(state);
+  });
+
+  it("uses the same deterministic invalidation ordering for disruption revisions", async () => {
+    const repository = new StressLabTestRepository();
+    const service = new StressLabService(
+      repository,
+      IMMEDIATE_SIMULATION_EXECUTOR,
+      IMMEDIATE_COMPARISON_EXECUTOR,
+    );
+    const disrupted = createTinyTriangleRun({ disruption: true });
+    const baseline = prepareStressLabRunInput({
+      ...cloneInput(disrupted),
+      disruptions: [],
+    });
+    const left = inputForSlot(baseline, "A");
+    const right = inputForSlot(baseline, "B");
+    await configure(service, left, "disruption-invalidation-config-a");
+    await configure(service, right, "disruption-invalidation-config-b");
+    const runA = await runCurrent(service, "A", "disruption-invalidation-run-a");
+    const runB = await runCurrent(service, "B", "disruption-invalidation-run-b");
+    const comparison = await service.compareScenarios({
+      operationId: "disruption-invalidation-comparison",
+      expectedRevision: service.readLabState().revision,
+      leftRunId: runA.artifactId,
+      rightRunId: runB.artifactId,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const finding = await service.stageFinding({
+      operationId: "disruption-invalidation-finding",
+      expectedRevision: service.readLabState().revision,
+      comparisonId: comparison.artifactId,
+      selectedOutcome: "INCONCLUSIVE",
+      emphasis: "RESILIENCE",
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const scenarioA = service.readLabState().scenarios.A!;
+    const disruption = inputForSlot(disrupted, "A").input.disruptions[0];
+    const injected = await service.injectDisruption({
+      operationId: "disruption-invalidation-inject",
+      expectedRevision: service.readLabState().revision,
+      scenarioRevisionId: scenarioA.id,
+      disruption,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    expect(injected.invalidatedArtifactIds).toEqual([
+      runA.artifactId,
+      comparison.artifactId,
+      finding.artifactId,
+    ]);
+    expect(repository.getState().currentRunIds.B).toBe(runB.artifactId);
+    expect(repository.getState().audit.at(-1)?.artifactIds).toEqual([
+      injected.artifactId,
+      runA.artifactId,
+      comparison.artifactId,
+      finding.artifactId,
+    ]);
+  });
+
+  it("rejects pending-finding replacement without consuming authority and allows a fresh stage after either human review", async () => {
+    for (const decision of ["ACCEPTED", "CHALLENGED"] as const) {
+      const harness = await createCurrentTinyRuns();
+      const comparison = await harness.service.compareScenarios({
+        operationId: `pending-${decision}-comparison`,
+        expectedRevision: harness.service.readLabState().revision,
+        leftRunId: harness.runA.artifactId,
+        rightRunId: harness.runB.artifactId,
+      }, HUMAN_UI_INVOCATION_CONTEXT);
+      const command = {
+        operationId: `pending-${decision}-first`,
+        expectedRevision: harness.service.readLabState().revision,
+        comparisonId: comparison.artifactId,
+        selectedOutcome: "TRADE_OFF" as const,
+        emphasis: "BALANCED" as const,
+      };
+      const first = await harness.service.stageFinding(
+        command,
+        WEBMCP_INVOCATION_CONTEXT,
+      );
+      expect(
+        await harness.service.stageFinding(command, WEBMCP_INVOCATION_CONTEXT),
+      ).toBe(first);
+      const beforeRejected = harness.repository.getState();
+      const error = await expectApplicationError(
+        harness.service.stageFinding({
+          ...command,
+          operationId: `pending-${decision}-replacement`,
+          expectedRevision: beforeRejected.revision,
+          selectedOutcome: "B",
+        }, WEBMCP_INVOCATION_CONTEXT),
+        "PREREQUISITE_NOT_MET",
+      );
+      expect(error.message).toBe(
+        "Accept or Challenge the current finding in the human UI before staging another finding.",
+      );
+      expect(harness.repository.getState()).toBe(beforeRejected);
+      expect(harness.repository.getState().nextFindingSequence).toBe(
+        beforeRejected.nextFindingSequence,
+      );
+
+      if (decision === "ACCEPTED") {
+        await harness.service.acceptFinding({
+          operationId: `pending-${decision}-review`,
+          expectedRevision: harness.service.readLabState().revision,
+          findingId: first.artifactId,
+        }, HUMAN_UI_INVOCATION_CONTEXT);
+      } else {
+        await harness.service.challengeFinding({
+          operationId: `pending-${decision}-review`,
+          expectedRevision: harness.service.readLabState().revision,
+          findingId: first.artifactId,
+          feedback: "Keep the failed hard constraint visible.",
+        }, HUMAN_UI_INVOCATION_CONTEXT);
+      }
+      const reviewedRecord = harness.repository.getState().reviews[
+        first.artifactId
+      ];
+      expect(reviewedRecord.decision).toBe(decision);
+      const second = await harness.service.stageFinding({
+        ...command,
+        operationId: `pending-${decision}-after-review`,
+        expectedRevision: harness.service.readLabState().revision,
+        selectedOutcome: "B",
+      }, WEBMCP_INVOCATION_CONTEXT);
+      expect(second.artifactId).not.toBe(first.artifactId);
+      expect(harness.repository.getState().findings[first.artifactId]).toBeDefined();
+      expect(harness.repository.getState().reviews[first.artifactId]).toBe(
+        reviewedRecord,
+      );
+      expect(harness.service.readLabState().currentFinding?.id).toBe(
+        second.artifactId,
+      );
+    }
+  });
+
+  it("serializes staging, scenario-edit and human-review race orderings without partial publication", async () => {
+    const simultaneous = await createCurrentTinyRuns();
+    const comparison = await simultaneous.service.compareScenarios({
+      operationId: "simultaneous-comparison",
+      expectedRevision: simultaneous.service.readLabState().revision,
+      leftRunId: simultaneous.runA.artifactId,
+      rightRunId: simultaneous.runB.artifactId,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const sharedRevision = simultaneous.service.readLabState().revision;
+    const outcomes = await Promise.allSettled([
+      simultaneous.service.stageFinding({
+        operationId: "simultaneous-stage-1",
+        expectedRevision: sharedRevision,
+        comparisonId: comparison.artifactId,
+        selectedOutcome: "A",
+        emphasis: "SERVICE",
+      }, HUMAN_UI_INVOCATION_CONTEXT),
+      simultaneous.service.stageFinding({
+        operationId: "simultaneous-stage-2",
+        expectedRevision: sharedRevision,
+        comparisonId: comparison.artifactId,
+        selectedOutcome: "B",
+        emphasis: "ENERGY",
+      }, WEBMCP_INVOCATION_CONTEXT),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    expect(rejected?.status).toBe("rejected");
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      code: "REVISION_CONFLICT",
+    });
+    expect(Object.keys(simultaneous.repository.getState().findings)).toHaveLength(1);
+    expect(
+      simultaneous.repository.getState().audit.filter(
+        (entry) => entry.action === "FINDING_STAGED",
+      ),
+    ).toHaveLength(1);
+
+    const interleavingRepository = new InterleavingRepository();
+    const interleavingService = new StressLabService(
+      interleavingRepository,
+      IMMEDIATE_SIMULATION_EXECUTOR,
+      IMMEDIATE_COMPARISON_EXECUTOR,
+    );
+    const base = createTinyTriangleRun({ disruption: true });
+    const left = inputForSlot(base, "A");
+    const right = inputForSlot(base, "B");
+    await configure(interleavingService, left, "interleave-config-a");
+    await configure(interleavingService, right, "interleave-config-b");
+    const runA = await runCurrent(interleavingService, "A", "interleave-run-a");
+    const runB = await runCurrent(interleavingService, "B", "interleave-run-b");
+    const currentComparison = await interleavingService.compareScenarios({
+      operationId: "interleave-comparison",
+      expectedRevision: interleavingService.readLabState().revision,
+      leftRunId: runA.artifactId,
+      rightRunId: runB.artifactId,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    const stageRevision = interleavingService.readLabState().revision;
+    let editPromise: Promise<unknown> | undefined;
+    interleavingRepository.beforeNextCompareAndSwap = () => {
+      editPromise = interleavingService.configureScenario({
+        operationId: "interleave-edit-wins",
+        expectedRevision: stageRevision,
+        slot: "A",
+        input: left.input,
+      }, HUMAN_UI_INVOCATION_CONTEXT);
+    };
+    await expectApplicationError(
+      interleavingService.stageFinding({
+        operationId: "interleave-stage-loses",
+        expectedRevision: stageRevision,
+        comparisonId: currentComparison.artifactId,
+        selectedOutcome: "TRADE_OFF",
+        emphasis: "BALANCED",
+      }, WEBMCP_INVOCATION_CONTEXT),
+      "REVISION_CONFLICT",
+    );
+    await editPromise;
+    expect(interleavingService.readLabState().currentFinding).toBeNull();
+    expect(Object.keys(interleavingRepository.getState().findings)).toHaveLength(0);
+    expect(
+      interleavingRepository.getState().audit.some(
+        (entry) => entry.operationId === "interleave-stage-loses",
+      ),
+    ).toBe(false);
+
+    const reviewed = await createCurrentTinyFinding();
+    const reviewRevision = reviewed.service.readLabState().revision;
+    await reviewed.service.acceptFinding({
+      operationId: "review-race-winner",
+      expectedRevision: reviewRevision,
+      findingId: reviewed.finding.artifactId,
+    }, HUMAN_UI_INVOCATION_CONTEXT);
+    await expectApplicationError(
+      reviewed.service.stageFinding({
+        operationId: "review-race-stale-stage",
+        expectedRevision: reviewRevision,
+        comparisonId: reviewed.comparison.artifactId,
+        selectedOutcome: "B",
+        emphasis: "RESILIENCE",
+      }, WEBMCP_INVOCATION_CONTEXT),
+      "REVISION_CONFLICT",
+    );
+    const fresh = await reviewed.service.stageFinding({
+      operationId: "review-race-fresh-stage",
+      expectedRevision: reviewed.service.readLabState().revision,
+      comparisonId: reviewed.comparison.artifactId,
+      selectedOutcome: "B",
+      emphasis: "RESILIENCE",
+    }, WEBMCP_INVOCATION_CONTEXT);
+    expect(reviewed.service.readLabState().currentFinding?.id).toBe(
+      fresh.artifactId,
+    );
   });
 
   it("accepts only trusted source singletons and keeps review/reset human-only", async () => {

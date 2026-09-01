@@ -9,6 +9,7 @@ import type {
   Fingerprint,
   PreparedRunInput,
   RunResultArtifact,
+  ScenarioObjective,
   ScenarioRevisionId,
   ScenarioSlot,
   StressLabRunInput,
@@ -22,6 +23,7 @@ export type StressLabApplicationErrorCode =
   | "INVALID_COMMAND"
   | "INVALID_STATE_TRANSITION"
   | "OPERATION_CANCELLED"
+  | "PREREQUISITE_NOT_MET"
   | "REVISION_CONFLICT"
   | "SIMULATION_FAILED"
   | "STALE_COMPARISON"
@@ -259,6 +261,64 @@ export interface ConfigureScenarioCommand {
   readonly input: StressLabRunInput;
 }
 
+export interface PublicScenarioConfiguration {
+  readonly label: string;
+  readonly fleet: {
+    readonly vehicleCount: number;
+    readonly seatsPerVehicle: number;
+    readonly batteryCapacityKWh: number;
+    readonly startingBatteryPercent: number;
+    readonly minimumReservePercent: number;
+    readonly energyKWhPerKm: number;
+    readonly dwellSeconds: number;
+    readonly initialZoneWeights: Readonly<Record<string, number>>;
+  };
+  readonly constraints: {
+    readonly maximumWaitSeconds: number;
+    readonly maximumUnservedPassengers: number;
+    readonly minimumBatteryReservePercent: number;
+    readonly maximumRecoverySeconds: number;
+    readonly standingAllowed: false;
+  };
+  readonly objectives: readonly ScenarioObjective[];
+}
+
+export interface BoundedScenarioPatch {
+  readonly label?: string;
+  readonly fleet?: Partial<PublicScenarioConfiguration["fleet"]>;
+  readonly constraints?: Partial<PublicScenarioConfiguration["constraints"]>;
+  readonly objectives?: readonly ScenarioObjective[];
+}
+
+export interface ConfigureScenarioConfigurationCommand {
+  readonly operationId: string;
+  readonly expectedRevision: number;
+  readonly slot: ScenarioSlot;
+  readonly mode: "REPLACE" | "PATCH";
+  readonly configuration: PublicScenarioConfiguration | BoundedScenarioPatch;
+}
+
+export interface PublicVehicleFailureDisruption {
+  readonly type: "VEHICLE_FAILURE";
+  readonly target:
+    | {
+        readonly kind: "VEHICLE_ID";
+        readonly vehicleId: string;
+      }
+    | {
+        readonly kind: "DETERMINISTIC_RULE";
+        readonly rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID";
+      };
+  readonly atSecond: number;
+}
+
+export interface InjectPublicDisruptionCommand {
+  readonly operationId: string;
+  readonly expectedRevision: number;
+  readonly scenarioRevisionId: string;
+  readonly disruption: PublicVehicleFailureDisruption;
+}
+
 export interface InjectDisruptionCommand {
   readonly operationId: string;
   readonly expectedRevision: number;
@@ -322,6 +382,7 @@ export interface MutationResult {
 export interface ScenarioMutationResult extends MutationResult {
   readonly artifactId: string;
   readonly scenarioRevisionRef: ScenarioRevisionRef;
+  readonly invalidatedArtifactIds: readonly string[];
 }
 
 export interface RunMutationResult extends MutationResult {

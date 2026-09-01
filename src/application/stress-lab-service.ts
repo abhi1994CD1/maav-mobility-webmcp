@@ -9,14 +9,22 @@ import {
 } from "@/domain/stress-lab/result-verification";
 import { prepareStressLabRunInput } from "@/domain/stress-lab/run-input";
 import {
+  basisPoints,
   comparisonId,
+  count,
+  disruptionId,
   findingId,
   operationId,
   runId,
   scenarioRevisionId,
+  simulatedSecond,
+  STRESS_LAB_DISRUPTION_POLICY_VERSION,
   StressLabArtifactVerificationError,
   StressLabComparisonError,
   StressLabSimulationCancelledError,
+  wattHours,
+  wattHoursPerKilometre,
+  zoneId,
   type DeterministicSimulationResult,
   type EventLedgerEnvelope,
   type FindingEmphasis,
@@ -25,6 +33,7 @@ import {
   type PreparedRunInput,
   type RunResultArtifact,
   type ScenarioSlot,
+  type StressLabRunInput,
 } from "@/domain/stress-lab/types";
 import { OperationCache } from "./operation-cache";
 import {
@@ -37,16 +46,19 @@ import {
   type ChallengeFindingCommand,
   type CompareScenariosCommand,
   type ComparisonMutationResult,
+  type ConfigureScenarioConfigurationCommand,
   type ConfigureScenarioCommand,
   type CurrentComparisonRecord,
   type CurrentRunRecord,
   type FindingMutationResult,
   type HumanReviewRecord,
   type InjectDisruptionCommand,
+  type InjectPublicDisruptionCommand,
   type MutationResult,
   type OperationProgress,
   type OperationTarget,
   type OperationToken,
+  type PublicScenarioConfiguration,
   type ResetLabCommand,
   type RunMutationResult,
   type RunScenarioCommand,
@@ -65,6 +77,36 @@ import {
 
 const APPLICATION_COMMAND_SCOPE = "APPLICATION_COMMAND";
 const MAX_PUBLICATION_ATTEMPTS = 8;
+const PUBLIC_CONFIGURATION_KEYS = [
+  "label",
+  "fleet",
+  "constraints",
+  "objectives",
+] as const;
+const PUBLIC_FLEET_KEYS = [
+  "vehicleCount",
+  "seatsPerVehicle",
+  "batteryCapacityKWh",
+  "startingBatteryPercent",
+  "minimumReservePercent",
+  "energyKWhPerKm",
+  "dwellSeconds",
+  "initialZoneWeights",
+] as const;
+const PUBLIC_CONSTRAINT_KEYS = [
+  "maximumWaitSeconds",
+  "maximumUnservedPassengers",
+  "minimumBatteryReservePercent",
+  "maximumRecoverySeconds",
+  "standingAllowed",
+] as const;
+const SCENARIO_OBJECTIVES = new Set([
+  "LOWER_WAIT",
+  "LOWER_ENERGY_PER_PASSENGER_KM",
+  "HIGHER_UTILIZATION",
+  "FASTER_RECOVERY",
+  "LOWER_EMPTY_KM",
+]);
 
 function clonePlain<Value>(value: Value): Value {
   if (Array.isArray(value)) {
@@ -132,6 +174,437 @@ function assertPlainExactKeys(
       `Missing command property ${missing}.`,
     );
   }
+}
+
+function assertPlainAllowedKeys(
+  value: unknown,
+  allowedKeys: readonly string[],
+  requiredKeys: readonly string[],
+  target: string,
+): asserts value is Record<string, unknown> {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null)
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      target,
+      `${target} must be a plain object.`,
+    );
+  }
+  const keys = Object.keys(value).sort(compareCodeUnits);
+  const allowed = new Set(allowedKeys);
+  const unexpected = keys.find(
+    (key) =>
+      key === "__proto__" ||
+      key === "prototype" ||
+      key === "constructor" ||
+      !allowed.has(key),
+  );
+  if (unexpected) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      `${target}.${unexpected}`,
+      `Unexpected command property ${unexpected}.`,
+    );
+  }
+  const missing = requiredKeys.find(
+    (key) => !Object.prototype.hasOwnProperty.call(value, key),
+  );
+  if (missing) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      `${target}.${missing}`,
+      `Missing command property ${missing}.`,
+    );
+  }
+}
+
+function exactScaledInteger(
+  value: unknown,
+  scale: number,
+  minimum: number,
+  maximum: number,
+  target: string,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      target,
+      `${target} must be a finite number.`,
+    );
+  }
+  const scaled = value * scale;
+  if (
+    !Number.isSafeInteger(scaled) ||
+    scaled < minimum ||
+    scaled > maximum
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      target,
+      `${target} does not map exactly to the supported integer domain unit.`,
+    );
+  }
+  return scaled;
+}
+
+function safeIntegerInRange(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  target: string,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      target,
+      `${target} must be a safe integer from ${minimum} to ${maximum}.`,
+    );
+  }
+  return value;
+}
+
+function publicConfigurationFromInput(
+  input: StressLabRunInput,
+): PublicScenarioConfiguration {
+  return {
+    label: input.scenario.label,
+    fleet: {
+      vehicleCount: input.scenario.fleet.vehicleCount,
+      seatsPerVehicle: input.scenario.fleet.seatsPerVehicle,
+      batteryCapacityKWh: input.scenario.fleet.batteryCapacityWh / 1_000,
+      startingBatteryPercent:
+        input.scenario.fleet.startingBatteryBasisPoints / 100,
+      minimumReservePercent:
+        input.scenario.fleet.minimumReserveBasisPoints / 100,
+      energyKWhPerKm:
+        input.scenario.fleet.energyWhPerKilometre / 1_000,
+      dwellSeconds: input.scenario.fleet.dwellSeconds,
+      initialZoneWeights: Object.fromEntries(
+        input.scenario.fleet.initialZoneWeights.map((entry) => [
+          entry.zoneId,
+          entry.weight,
+        ]),
+      ),
+    },
+    constraints: {
+      maximumWaitSeconds: input.scenario.constraints.maximumWaitSeconds,
+      maximumUnservedPassengers:
+        input.scenario.constraints.maximumUnservedPassengers,
+      minimumBatteryReservePercent:
+        input.scenario.constraints.minimumBatteryReserveBasisPoints / 100,
+      maximumRecoverySeconds:
+        input.scenario.constraints.maximumRecoverySeconds,
+      standingAllowed: false,
+    },
+    objectives: [...input.scenario.objectives],
+  };
+}
+
+function mergePublicConfiguration(
+  base: PublicScenarioConfiguration,
+  patch: ConfigureScenarioConfigurationCommand["configuration"],
+): PublicScenarioConfiguration {
+  return {
+    ...base,
+    ...patch,
+    fleet: { ...base.fleet, ...patch.fleet },
+    constraints: { ...base.constraints, ...patch.constraints },
+    objectives: patch.objectives ?? base.objectives,
+  };
+}
+
+function normalizePublicScenarioConfiguration(
+  slot: ScenarioSlot,
+  value: unknown,
+  partial: boolean,
+  baseConfiguration?: PublicScenarioConfiguration,
+): PublicScenarioConfiguration {
+  assertPlainAllowedKeys(
+    value,
+    PUBLIC_CONFIGURATION_KEYS,
+    partial ? [] : PUBLIC_CONFIGURATION_KEYS,
+    "configuration",
+  );
+  if (partial && Object.keys(value).length === 0) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration",
+      "PATCH configuration must contain at least one mutable field.",
+    );
+  }
+  if (partial && value.fleet !== undefined) {
+    const fleetPatch = value.fleet;
+    assertPlainAllowedKeys(
+      fleetPatch,
+      PUBLIC_FLEET_KEYS,
+      [],
+      "configuration.fleet",
+    );
+  }
+  if (partial && value.constraints !== undefined) {
+    const constraintsPatch = value.constraints;
+    assertPlainAllowedKeys(
+      constraintsPatch,
+      PUBLIC_CONSTRAINT_KEYS,
+      [],
+      "configuration.constraints",
+    );
+  }
+  const fleetPatchSize =
+    value.fleet !== undefined && value.fleet !== null
+      ? Object.keys(value.fleet).length
+      : 0;
+  const constraintPatchSize =
+    value.constraints !== undefined && value.constraints !== null
+      ? Object.keys(value.constraints).length
+      : 0;
+  if (
+    partial &&
+    value.label === undefined &&
+    value.objectives === undefined &&
+    fleetPatchSize === 0 &&
+    constraintPatchSize === 0
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration",
+      "PATCH configuration must contain at least one mutable field.",
+    );
+  }
+
+  const golden = createGoldenExperimentInputs().runs[slot].input;
+  const baseline = baseConfiguration ?? publicConfigurationFromInput(golden);
+  const candidate = partial
+    ? mergePublicConfiguration(baseline, value)
+    : (value as unknown as PublicScenarioConfiguration);
+
+  assertPlainAllowedKeys(
+    candidate.fleet,
+    PUBLIC_FLEET_KEYS,
+    PUBLIC_FLEET_KEYS,
+    "configuration.fleet",
+  );
+  assertPlainAllowedKeys(
+    candidate.constraints,
+    PUBLIC_CONSTRAINT_KEYS,
+    PUBLIC_CONSTRAINT_KEYS,
+    "configuration.constraints",
+  );
+  if (
+    typeof candidate.label !== "string" ||
+    candidate.label.trim().length < 1 ||
+    candidate.label.trim().length > 48 ||
+    /[<>\u0000-\u001F\u007F]/u.test(candidate.label)
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration.label",
+      "Scenario label must be 1–48 plain-text characters.",
+    );
+  }
+  if (
+    !Array.isArray(candidate.objectives) ||
+    candidate.objectives.length < 1 ||
+    candidate.objectives.length > SCENARIO_OBJECTIVES.size ||
+    candidate.objectives.some(
+      (objective) =>
+        typeof objective !== "string" || !SCENARIO_OBJECTIVES.has(objective),
+    ) ||
+    new Set(candidate.objectives).size !== candidate.objectives.length
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration.objectives",
+      "Objectives must be unique approved Stress Lab objective identifiers.",
+    );
+  }
+  if (
+    candidate.constraints.standingAllowed !== false ||
+    candidate.constraints.minimumBatteryReservePercent !==
+      candidate.fleet.minimumReservePercent
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration.constraints",
+      "Standing must remain disabled and the reserve constraints must match.",
+    );
+  }
+
+  const weights = candidate.fleet.initialZoneWeights;
+  assertPlainAllowedKeys(
+    weights,
+    golden.network.zones.map((zone) => zone.id),
+    [],
+    "configuration.fleet.initialZoneWeights",
+  );
+  const weightEntries = Object.entries(weights);
+  if (
+    weightEntries.length < 1 ||
+    weightEntries.some(
+      ([, weight]) =>
+        !Number.isSafeInteger(weight) || weight < 1 || weight > 1_000_000,
+    ) ||
+    weightEntries.reduce((sum, [, weight]) => sum + weight, 0) !== 100
+  ) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration.fleet.initialZoneWeights",
+      "Initial zone weights must be positive safe integers totaling 100.",
+    );
+  }
+
+  const startingBasisPoints = exactScaledInteger(
+    candidate.fleet.startingBatteryPercent,
+    100,
+    0,
+    10_000,
+    "configuration.fleet.startingBatteryPercent",
+  );
+  const minimumReserveBasisPoints = exactScaledInteger(
+    candidate.fleet.minimumReservePercent,
+    100,
+    0,
+    10_000,
+    "configuration.fleet.minimumReservePercent",
+  );
+  if (minimumReserveBasisPoints > startingBasisPoints) {
+    throw new StressLabApplicationError(
+      "INVALID_COMMAND",
+      "configuration.fleet.minimumReservePercent",
+      "Minimum reserve cannot exceed starting battery.",
+    );
+  }
+
+  return {
+    label: candidate.label.trim(),
+    fleet: {
+      vehicleCount: safeIntegerInRange(
+        candidate.fleet.vehicleCount,
+        0,
+        30,
+        "configuration.fleet.vehicleCount",
+      ),
+      seatsPerVehicle: safeIntegerInRange(
+        candidate.fleet.seatsPerVehicle,
+        1,
+        20,
+        "configuration.fleet.seatsPerVehicle",
+      ),
+      batteryCapacityKWh:
+        exactScaledInteger(
+          candidate.fleet.batteryCapacityKWh,
+          1_000,
+          1,
+          1_000_000_000,
+          "configuration.fleet.batteryCapacityKWh",
+        ) / 1_000,
+      startingBatteryPercent: startingBasisPoints / 100,
+      minimumReservePercent: minimumReserveBasisPoints / 100,
+      energyKWhPerKm:
+        exactScaledInteger(
+          candidate.fleet.energyKWhPerKm,
+          1_000,
+          1,
+          100_000,
+          "configuration.fleet.energyKWhPerKm",
+        ) / 1_000,
+      dwellSeconds: safeIntegerInRange(
+        candidate.fleet.dwellSeconds,
+        0,
+        86_400,
+        "configuration.fleet.dwellSeconds",
+      ),
+      initialZoneWeights: Object.fromEntries(
+        golden.network.zones.map((zone) => [zone.id, weights[zone.id]]),
+      ),
+    },
+    constraints: {
+      maximumWaitSeconds: safeIntegerInRange(
+        candidate.constraints.maximumWaitSeconds,
+        0,
+        86_400,
+        "configuration.constraints.maximumWaitSeconds",
+      ),
+      maximumUnservedPassengers: safeIntegerInRange(
+        candidate.constraints.maximumUnservedPassengers,
+        0,
+        1_000_000,
+        "configuration.constraints.maximumUnservedPassengers",
+      ),
+      minimumBatteryReservePercent: minimumReserveBasisPoints / 100,
+      maximumRecoverySeconds: safeIntegerInRange(
+        candidate.constraints.maximumRecoverySeconds,
+        0,
+        86_400,
+        "configuration.constraints.maximumRecoverySeconds",
+      ),
+      standingAllowed: false,
+    },
+    objectives: [...candidate.objectives],
+  };
+}
+
+function inputFromPublicConfiguration(
+  slot: ScenarioSlot,
+  configuration: PublicScenarioConfiguration,
+  baseInput?: StressLabRunInput,
+): StressLabRunInput {
+  const base = baseInput ?? createGoldenExperimentInputs().runs[slot].input;
+  return {
+    ...base,
+    scenarioSlot: slot,
+    scenario: {
+      slot,
+      label: configuration.label,
+      fleet: {
+        vehicleCount: count(configuration.fleet.vehicleCount),
+        seatsPerVehicle: count(configuration.fleet.seatsPerVehicle),
+        batteryCapacityWh: wattHours(
+          configuration.fleet.batteryCapacityKWh * 1_000,
+        ),
+        startingBatteryBasisPoints: basisPoints(
+          configuration.fleet.startingBatteryPercent * 100,
+        ),
+        minimumReserveBasisPoints: basisPoints(
+          configuration.fleet.minimumReservePercent * 100,
+        ),
+        energyWhPerKilometre: wattHoursPerKilometre(
+          configuration.fleet.energyKWhPerKm * 1_000,
+        ),
+        dwellSeconds: simulatedSecond(configuration.fleet.dwellSeconds),
+        initialZoneWeights: Object.entries(
+          configuration.fleet.initialZoneWeights,
+        ).map(([id, weight]) => ({ zoneId: zoneId(id), weight: count(weight) })),
+      },
+      constraints: {
+        maximumWaitSeconds: simulatedSecond(
+          configuration.constraints.maximumWaitSeconds,
+        ),
+        maximumUnservedPassengers: count(
+          configuration.constraints.maximumUnservedPassengers,
+        ),
+        minimumBatteryReserveBasisPoints: basisPoints(
+          configuration.constraints.minimumBatteryReservePercent * 100,
+        ),
+        maximumRecoverySeconds: simulatedSecond(
+          configuration.constraints.maximumRecoverySeconds,
+        ),
+        standingAllowed: false,
+      },
+      objectives: [...configuration.objectives],
+    },
+    disruptions: baseInput?.disruptions ?? [],
+  };
 }
 
 function assertExpectedRevision(value: number): void {
@@ -860,6 +1333,56 @@ export class StressLabService {
     );
   }
 
+  private invalidatedArtifactsForScenarioMutation(
+    current: StressLabApplicationState,
+    slot: ScenarioSlot,
+  ): readonly string[] {
+    const invalidated: string[] = [];
+    const runIdValue = current.currentRunIds[slot];
+    if (!runIdValue) return deepFreeze(invalidated);
+    if (!current.runs[runIdValue]) {
+      throw new StressLabApplicationError(
+        "INVALID_STATE_TRANSITION",
+        `currentRunIds.${slot}`,
+        `Current Scenario ${slot} run does not reference committed evidence.`,
+      );
+    }
+    invalidated.push(runIdValue);
+
+    const comparisonIdValue = current.currentComparisonId;
+    if (!comparisonIdValue) return deepFreeze(invalidated);
+    const comparison = current.comparisons[comparisonIdValue];
+    if (!comparison) {
+      throw new StressLabApplicationError(
+        "INVALID_STATE_TRANSITION",
+        "currentComparisonId",
+        "The current comparison does not reference committed evidence.",
+      );
+    }
+    if (
+      comparison.leftRunId !== runIdValue &&
+      comparison.rightRunId !== runIdValue
+    ) {
+      return deepFreeze(invalidated);
+    }
+    invalidated.push(comparisonIdValue);
+
+    const findingIdValue = current.currentFindingId;
+    if (!findingIdValue) return deepFreeze(invalidated);
+    const finding = current.findings[findingIdValue];
+    if (!finding) {
+      throw new StressLabApplicationError(
+        "INVALID_STATE_TRANSITION",
+        "currentFindingId",
+        "The current finding does not reference committed evidence.",
+      );
+    }
+    if (finding.comparisonId === comparisonIdValue) {
+      invalidated.push(findingIdValue);
+    }
+    return deepFreeze([...new Set(invalidated)]);
+  }
+
   private scenarioTransition(
     current: StressLabApplicationState,
     nextRevision: number,
@@ -869,6 +1392,7 @@ export class StressLabService {
     readonly state: StressLabApplicationState;
     readonly record: ScenarioRevisionRecord;
     readonly supersededOperationIds: readonly string[];
+    readonly invalidatedArtifactIds: readonly string[];
   } {
     const scenarioRevision = current.scenarioRevisionCounters[slot] + 1;
     const id = scenarioRevisionId(`scenario-${slot}-r${scenarioRevision}`);
@@ -884,6 +1408,8 @@ export class StressLabService {
       createdAtApplicationRevision: nextRevision,
     });
     const runTarget = `RUN:${slot}` as const;
+    const invalidatedArtifactIds =
+      this.invalidatedArtifactsForScenarioMutation(current, slot);
     const supersededOperationIds = [
       current.activeOperations[runTarget]?.operationId,
       current.activeOperations.COMPARISON?.operationId,
@@ -893,6 +1419,16 @@ export class StressLabService {
     delete activeOperations.COMPARISON;
     const currentRunIds = { ...current.currentRunIds };
     delete currentRunIds[slot];
+    const currentComparisonId =
+      current.currentComparisonId &&
+      invalidatedArtifactIds.includes(current.currentComparisonId)
+        ? undefined
+        : current.currentComparisonId;
+    const currentFindingId =
+      current.currentFindingId &&
+      invalidatedArtifactIds.includes(current.currentFindingId)
+        ? undefined
+        : current.currentFindingId;
     const state = deepFreeze({
       ...current,
       scenarioRevisionCounters: {
@@ -908,8 +1444,8 @@ export class StressLabService {
         [id]: record,
       },
       currentRunIds,
-      currentComparisonId: undefined,
-      currentFindingId: undefined,
+      currentComparisonId,
+      currentFindingId,
       activeOperations,
       targetGenerations: {
         ...current.targetGenerations,
@@ -917,7 +1453,103 @@ export class StressLabService {
         COMPARISON: this.bumpGeneration(current, "COMPARISON"),
       },
     });
-    return { state, record, supersededOperationIds };
+    return {
+      state,
+      record,
+      supersededOperationIds,
+      invalidatedArtifactIds,
+    };
+  }
+
+  private commitScenarioMutationExpected(
+    expectedRevision: number,
+    audit: {
+      readonly source: ApplicationAuditEntry["source"];
+      readonly inputFingerprint: Fingerprint;
+      readonly action: "SCENARIO_CONFIGURED" | "DISRUPTION_INJECTED";
+      readonly operationId: string;
+      readonly target: string;
+    },
+    transition: (
+      current: StressLabApplicationState,
+      nextRevision: number,
+    ) => ReturnType<StressLabService["scenarioTransition"]>,
+  ): {
+    readonly state: StressLabApplicationState;
+    readonly transition: ReturnType<StressLabService["scenarioTransition"]>;
+  } {
+    const current = this.assertRevision(expectedRevision);
+    const nextRevision = current.revision + 1;
+    const transitionResult = transition(current, nextRevision);
+    const artifactIds = [
+      transitionResult.record.id,
+      ...transitionResult.invalidatedArtifactIds,
+    ];
+    const next = deepFreeze({
+      ...transitionResult.state,
+      revision: nextRevision,
+      audit: this.appendAudit(
+        current,
+        nextRevision,
+        audit.source,
+        audit.inputFingerprint,
+        audit.action,
+        audit.operationId,
+        audit.target,
+        "COMPLETED",
+        artifactIds,
+      ),
+    });
+    if (!this.repository.compareAndSwap(current.revision, next)) {
+      throw revisionConflict(
+        expectedRevision,
+        this.repository.getState().revision,
+      );
+    }
+    return { state: next, transition: transitionResult };
+  }
+
+  private commitScenarioRevision(
+    command: {
+      readonly operationId: string;
+      readonly expectedRevision: number;
+      readonly slot: ScenarioSlot;
+    },
+    context: StressLabInvocationContext,
+    preparedInput: PreparedRunInput,
+    inputFingerprint: Fingerprint,
+  ): ScenarioMutationResult {
+    const committed = this.commitScenarioMutationExpected(
+      command.expectedRevision,
+      {
+        source: context.source,
+        inputFingerprint,
+        action: "SCENARIO_CONFIGURED",
+        operationId: command.operationId,
+        target: `SCENARIO:${command.slot}`,
+      },
+      (current, nextRevision) => {
+        return this.scenarioTransition(
+          current,
+          nextRevision,
+          command.slot,
+          preparedInput,
+        );
+      },
+    );
+    for (const superseded of committed.transition.supersededOperationIds) {
+      this.abortOperation(superseded, "SUPERSEDED");
+    }
+    return deepFreeze({
+      operationId: command.operationId,
+      stateRevision: committed.state.revision,
+      status: "COMPLETED" as const,
+      artifactId: committed.transition.record.id,
+      scenarioRevisionRef: clonePlain(committed.transition.record.ref),
+      invalidatedArtifactIds: clonePlain(
+        committed.transition.invalidatedArtifactIds,
+      ),
+    });
   }
 
   configureScenario(
@@ -951,52 +1583,77 @@ export class StressLabService {
       "configureScenario",
       context.source,
       inputFingerprint,
+      () =>
+        this.commitScenarioRevision(
+          command,
+          context,
+          preparedInput,
+          inputFingerprint,
+        ),
+    );
+  }
+
+  configureScenarioConfiguration(
+    command: ConfigureScenarioConfigurationCommand,
+    context: StressLabInvocationContext,
+  ): Promise<ScenarioMutationResult> {
+    assertTrustedInvocationContext(context);
+    assertPlainExactKeys(
+      command,
+      ["operationId", "expectedRevision", "slot", "mode", "configuration"],
+      "configureScenarioConfiguration",
+    );
+    operationId(command.operationId);
+    assertExpectedRevision(command.expectedRevision);
+    assertSlot(command.slot);
+    if (command.mode !== "REPLACE" && command.mode !== "PATCH") {
+      throw new StressLabApplicationError(
+        "INVALID_COMMAND",
+        "mode",
+        "mode must be REPLACE or PATCH.",
+      );
+    }
+    const inputFingerprint = commandInputFingerprint("configureScenario", {
+      expectedRevision: command.expectedRevision,
+      slot: command.slot,
+      mode: command.mode,
+      configuration: command.configuration,
+    });
+    return this.operation(
+      command.operationId,
+      "configureScenario",
+      context.source,
+      inputFingerprint,
       () => {
-        const before = this.assertRevision(command.expectedRevision);
-        const anticipatedArtifactId = scenarioRevisionId(
-          `scenario-${command.slot}-r${before.scenarioRevisionCounters[command.slot] + 1}`,
-        );
-        let transitionResult:
-          | ReturnType<StressLabService["scenarioTransition"]>
-          | undefined;
-        const next = this.commitExpected(
-          command.expectedRevision,
-          {
-            source: context.source,
-            inputFingerprint,
-            action: "SCENARIO_CONFIGURED",
-            operationId: command.operationId,
-            target: `SCENARIO:${command.slot}`,
-            status: "COMPLETED",
-            artifactIds: [anticipatedArtifactId],
-          },
-          (current, nextRevision) => {
-            transitionResult = this.scenarioTransition(
-              current,
-              nextRevision,
-              command.slot,
-              preparedInput,
-            );
-            return transitionResult.state;
-          },
-        );
-        if (!transitionResult) {
+        const current = this.assertRevision(command.expectedRevision);
+        const existing = currentScenarioRecord(current, command.slot);
+        if (command.mode === "PATCH" && !existing) {
           throw new StressLabApplicationError(
             "INVALID_STATE_TRANSITION",
             command.slot,
-            "Scenario revision was not constructed.",
+            `Scenario ${command.slot} must be configured before it can be patched.`,
           );
         }
-        for (const superseded of transitionResult.supersededOperationIds) {
-          this.abortOperation(superseded, "SUPERSEDED");
-        }
-        return deepFreeze({
-          operationId: command.operationId,
-          stateRevision: next.revision,
-          status: "COMPLETED" as const,
-          artifactId: transitionResult.record.id,
-          scenarioRevisionRef: clonePlain(transitionResult.record.ref),
-        });
+        const configuration = normalizePublicScenarioConfiguration(
+          command.slot,
+          command.configuration,
+          command.mode === "PATCH",
+          existing
+            ? publicConfigurationFromInput(existing.preparedInput.input)
+            : undefined,
+        );
+        const input = inputFromPublicConfiguration(
+          command.slot,
+          configuration,
+          command.mode === "PATCH" ? existing?.preparedInput.input : undefined,
+        );
+        const preparedInput = prepareStressLabRunInput(input);
+        return this.commitScenarioRevision(
+          command,
+          context,
+          preparedInput,
+          inputFingerprint,
+        );
       },
     );
   }
@@ -1030,18 +1687,7 @@ export class StressLabService {
       context.source,
       inputFingerprint,
       () => {
-        const before = this.assertRevision(command.expectedRevision);
-        const existingBefore = this.requireCurrentScenarioById(
-          before,
-          command.scenarioRevisionId,
-        );
-        const anticipatedArtifactId = scenarioRevisionId(
-          `scenario-${existingBefore.ref.slot}-r${before.scenarioRevisionCounters[existingBefore.ref.slot] + 1}`,
-        );
-        let transitionResult:
-          | ReturnType<StressLabService["scenarioTransition"]>
-          | undefined;
-        const next = this.commitExpected(
+        const committed = this.commitScenarioMutationExpected(
           command.expectedRevision,
           {
             source: context.source,
@@ -1049,8 +1695,6 @@ export class StressLabService {
             action: "DISRUPTION_INJECTED",
             operationId: command.operationId,
             target: command.scenarioRevisionId,
-            status: "COMPLETED",
-            artifactIds: [anticipatedArtifactId],
           },
           (current, nextRevision) => {
             const existing = this.requireCurrentScenarioById(
@@ -1064,34 +1708,129 @@ export class StressLabService {
                 command.disruption,
               ],
             });
-            transitionResult = this.scenarioTransition(
+            return this.scenarioTransition(
               current,
               nextRevision,
               existing.ref.slot,
               prepared,
             );
-            return transitionResult.state;
           },
         );
-        if (!transitionResult) {
-          throw new StressLabApplicationError(
-            "INVALID_STATE_TRANSITION",
-            command.scenarioRevisionId,
-            "Disrupted scenario revision was not constructed.",
-          );
-        }
-        for (const superseded of transitionResult.supersededOperationIds) {
+        for (const superseded of committed.transition.supersededOperationIds) {
           this.abortOperation(superseded, "SUPERSEDED");
         }
         return deepFreeze({
           operationId: command.operationId,
-          stateRevision: next.revision,
+          stateRevision: committed.state.revision,
           status: "COMPLETED" as const,
-          artifactId: transitionResult.record.id,
-          scenarioRevisionRef: clonePlain(transitionResult.record.ref),
+          artifactId: committed.transition.record.id,
+          scenarioRevisionRef: clonePlain(committed.transition.record.ref),
+          invalidatedArtifactIds: clonePlain(
+            committed.transition.invalidatedArtifactIds,
+          ),
         });
       },
     );
+  }
+
+  injectPublicDisruption(
+    command: InjectPublicDisruptionCommand,
+    context: StressLabInvocationContext,
+  ): Promise<ScenarioMutationResult> {
+    assertTrustedInvocationContext(context);
+    assertPlainExactKeys(
+      command,
+      [
+        "operationId",
+        "expectedRevision",
+        "scenarioRevisionId",
+        "disruption",
+      ],
+      "injectPublicDisruption",
+    );
+    assertPlainExactKeys(
+      command.disruption,
+      ["type", "target", "atSecond"],
+      "injectPublicDisruption.disruption",
+    );
+    operationId(command.operationId);
+    assertExpectedRevision(command.expectedRevision);
+    scenarioRevisionId(command.scenarioRevisionId);
+    if (command.disruption.type !== "VEHICLE_FAILURE") {
+      throw new StressLabApplicationError(
+        "INVALID_COMMAND",
+        "disruption.type",
+        "H0 supports VEHICLE_FAILURE only.",
+      );
+    }
+    if (command.disruption.target.kind === "VEHICLE_ID") {
+      assertPlainExactKeys(
+        command.disruption.target,
+        ["kind", "vehicleId"],
+        "injectPublicDisruption.disruption.target",
+      );
+      throw new StressLabApplicationError(
+        "INVALID_COMMAND",
+        "disruption.target.kind",
+        "H0 trusted evidence requires the equivalent deterministic target rule.",
+      );
+    }
+    assertPlainExactKeys(
+      command.disruption.target,
+      ["kind", "rule"],
+      "injectPublicDisruption.disruption.target",
+    );
+    if (
+      command.disruption.target.kind !== "DETERMINISTIC_RULE" ||
+      command.disruption.target.rule !==
+        "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID"
+    ) {
+      throw new StressLabApplicationError(
+        "INVALID_COMMAND",
+        "disruption.target.rule",
+        "The deterministic target rule is not supported.",
+      );
+    }
+    const atSecond = simulatedSecond(command.disruption.atSecond);
+    const slotMatch = /^scenario-([AB])-r[1-9][0-9]*$/u.exec(
+      command.scenarioRevisionId,
+    );
+    const slot = (slotMatch?.[1] ?? "A") as ScenarioSlot;
+    const goldenDisruption = createGoldenExperimentInputs().runs[slot].input
+      .disruptions[0];
+    if (!goldenDisruption) {
+      throw new StressLabApplicationError(
+        "INVALID_STATE_TRANSITION",
+        "disruption",
+        "The approved H0 disruption template is unavailable.",
+      );
+    }
+    const normalized: InjectDisruptionCommand = {
+      operationId: command.operationId,
+      expectedRevision: command.expectedRevision,
+      scenarioRevisionId: command.scenarioRevisionId,
+      disruption: {
+        id: disruptionId(
+          atSecond === 720
+            ? `failure-${slot}-0842`
+            : `failure-${slot}-t${atSecond}`,
+        ),
+        type: "VEHICLE_FAILURE",
+        atSecond,
+        target: {
+          kind: "DETERMINISTIC_RULE",
+          policyVersion: STRESS_LAB_DISRUPTION_POLICY_VERSION,
+          ranking: [
+            "HIGHEST_ONBOARD_OCCUPANCY",
+            "HIGHEST_RESERVED_PASSENGER_COUNT",
+            "ACTIVE_SERVICE_FIRST",
+            "ASCENDING_VEHICLE_ID",
+          ],
+        },
+        recoveryTransferSeconds: goldenDisruption.recoveryTransferSeconds,
+      },
+    };
+    return this.injectDisruption(normalized, context);
   }
 
   runScenario(
@@ -1669,6 +2408,30 @@ export class StressLabService {
     return record;
   }
 
+  private assertNoPendingFinding(
+    state: StressLabApplicationState,
+  ): void {
+    const currentFindingId = state.currentFindingId;
+    if (!currentFindingId) return;
+    const finding = state.findings[currentFindingId];
+    if (!finding || !isFindingCurrent(state, finding)) {
+      throw new StressLabApplicationError(
+        "INVALID_STATE_TRANSITION",
+        "currentFindingId",
+        "The current finding pointer does not reference current committed evidence.",
+      );
+    }
+    const review = state.reviews[currentFindingId];
+    if (!review || review.decision === "PENDING_REVIEW") {
+      throw new StressLabApplicationError(
+        "PREREQUISITE_NOT_MET",
+        currentFindingId,
+        "Accept or Challenge the current finding in the human UI before staging another finding.",
+        { retryable: true },
+      );
+    }
+  }
+
   stageFinding(
     command: StageFindingCommand,
     context: StressLabInvocationContext,
@@ -1703,6 +2466,8 @@ export class StressLabService {
       inputFingerprint,
       () => {
         const before = this.assertRevision(command.expectedRevision);
+        this.requireCurrentComparisonById(before, command.comparisonId);
+        this.assertNoPendingFinding(before);
         const anticipatedArtifactId = findingId(
           `finding-${before.nextFindingSequence}`,
         );
@@ -1723,6 +2488,7 @@ export class StressLabService {
               current,
               command.comparisonId,
             );
+            this.assertNoPendingFinding(current);
             const candidate = createFindingCandidate({
               comparison: comparison.artifact,
               selectedOutcome: command.selectedOutcome,

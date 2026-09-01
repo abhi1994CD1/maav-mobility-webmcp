@@ -1,183 +1,31 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import type {
-  ConfigureScenarioResult,
-  ProvisionalScenarioRevision,
-  StressLabScenarioSlot,
-} from "@/application/stress-lab/spike-service";
-import { STRESS_LAB_SPIKE_DISCLOSURE } from "@/application/stress-lab/spike-service";
+import { useEffect, useState } from "react";
+import type { StressLabRuntimeStoreState } from "@/infrastructure/persistence/stress-lab-repository";
 import { StressLabWebMcpBridge } from "@/infrastructure/webmcp/StressLabWebMcpBridge";
-import { useStressLabSpikeStore } from "@/state/stress-lab-spike-hooks";
-import { configureScenarioFromManualUi } from "@/state/stress-lab-spike-runtime";
+import { STRESS_LAB_WEBMCP_TOOL_NAMES } from "@/infrastructure/webmcp/stress-lab-tools";
+import { getBrowserStressLabRuntime } from "@/state/stress-lab-runtime";
 import styles from "./StressLabSpike.module.css";
 
-interface ScenarioTemplate {
-  label: string;
-  vehicleCount: number;
-  seatsPerVehicle: number;
-}
-
-const TEMPLATES: Record<StressLabScenarioSlot, ScenarioTemplate> = {
-  A: {
-    label: "Twelve compact pods",
-    vehicleCount: 12,
-    seatsPerVehicle: 8,
-  },
-  B: {
-    label: "Ten higher-capacity pods",
-    vehicleCount: 10,
-    seatsPerVehicle: 10,
-  },
+const INITIAL_UI: StressLabRuntimeStoreState["ui"] = {
+  webMcpStatus: "CHECKING",
+  webMcpMessage: "Checking Chrome WebMCP availability…",
+  observedView: null,
+  activities: [],
+  nextActivityId: 1,
 };
 
-function resultMessage(result: ConfigureScenarioResult): string {
-  if (result.ok) {
-    return `${result.artifactId} committed at revision ${result.stateRevision}.`;
-  }
-  return `${result.error.code}: ${result.error.message}`;
-}
-
-function ScenarioCard({
-  slot,
-  revision,
-  scenario,
-  selected,
-}: {
-  slot: StressLabScenarioSlot;
-  revision: number;
-  scenario: ProvisionalScenarioRevision | undefined;
-  selected: boolean;
-}) {
-  const template = TEMPLATES[slot];
-  const [label, setLabel] = useState(template.label);
-  const [vehicleCount, setVehicleCount] = useState(template.vehicleCount);
-  const [seatsPerVehicle, setSeatsPerVehicle] = useState(
-    template.seatsPerVehicle,
-  );
-  const [message, setMessage] = useState(
-    `Golden template ready for Scenario ${slot}.`,
-  );
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const result = configureScenarioFromManualUi({
-      operationId: `human-${slot.toLowerCase()}-${revision + 1}`,
-      expectedRevision: revision,
-      slot,
-      mode: "REPLACE",
-      configuration: {
-        label,
-        fleet: { vehicleCount, seatsPerVehicle },
-      },
-    });
-    setMessage(resultMessage(result));
-  }
-
-  return (
-    <article
-      className={`${styles.scenarioCard} ${selected ? styles.selectedCard : ""}`}
-      aria-labelledby={`scenario-${slot}-title`}
-    >
-      <header className={styles.scenarioHeader}>
-        <div>
-          <span>SCENARIO {slot}</span>
-          <h2 id={`scenario-${slot}-title`}>
-            {scenario?.configuration.label ?? "Not configured"}
-          </h2>
-        </div>
-        <span className={scenario ? styles.configured : styles.pending}>
-          {scenario ? "CONFIGURED" : "PENDING"}
-        </span>
-      </header>
-
-      <dl className={styles.scenarioFacts}>
-        <div>
-          <dt>Vehicles</dt>
-          <dd>{scenario?.configuration.fleet.vehicleCount ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Seats / vehicle</dt>
-          <dd>{scenario?.configuration.fleet.seatsPerVehicle ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Total seats</dt>
-          <dd>{scenario?.totalSeats ?? "—"}</dd>
-        </div>
-      </dl>
-
-      <form className={styles.scenarioForm} onSubmit={submit}>
-        <fieldset>
-          <legend>Bounded integration-test configuration</legend>
-          <label htmlFor={`scenario-${slot}-label`}>
-            Scenario label
-          </label>
-          <input
-            id={`scenario-${slot}-label`}
-            name="label"
-            value={label}
-            onChange={(event) => setLabel(event.target.value)}
-            minLength={1}
-            maxLength={48}
-            aria-describedby={`scenario-${slot}-label-help`}
-            required
-          />
-          <small id={`scenario-${slot}-label-help`}>
-            Plain text, 1–48 characters.
-          </small>
-
-          <div className={styles.numericFields}>
-            <div>
-              <label htmlFor={`scenario-${slot}-vehicles`}>Vehicles</label>
-              <input
-                id={`scenario-${slot}-vehicles`}
-                name="vehicleCount"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={30}
-                step={1}
-                value={vehicleCount}
-                onChange={(event) => {
-                  const nextValue = event.target.valueAsNumber;
-                  if (Number.isFinite(nextValue)) setVehicleCount(nextValue);
-                }}
-                required
-              />
-            </div>
-            <div>
-              <label htmlFor={`scenario-${slot}-seats`}>Seats / vehicle</label>
-              <input
-                id={`scenario-${slot}-seats`}
-                name="seatsPerVehicle"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={20}
-                step={1}
-                value={seatsPerVehicle}
-                onChange={(event) => {
-                  const nextValue = event.target.valueAsNumber;
-                  if (Number.isFinite(nextValue)) setSeatsPerVehicle(nextValue);
-                }}
-                required
-              />
-            </div>
-          </div>
-
-          <button type="submit">Configure Scenario {slot}</button>
-        </fieldset>
-      </form>
-      <p className={styles.formResult} aria-live="polite">
-        {message}
-      </p>
-    </article>
-  );
-}
-
 export function StressLabSpike() {
-  const domain = useStressLabSpikeStore((state) => state.domain);
-  const ui = useStressLabSpikeStore((state) => state.ui);
+  const [ui, setUi] = useState(INITIAL_UI);
+
+  useEffect(() => {
+    const runtime = getBrowserStressLabRuntime();
+    const publish = (state: StressLabRuntimeStoreState) => setUi(state.ui);
+    publish(runtime.store.getState());
+    return runtime.store.subscribe(publish);
+  }, []);
+
+  const view = ui.observedView;
 
   return (
     <main className={styles.labShell}>
@@ -187,31 +35,30 @@ export function StressLabSpike() {
         <div className={styles.brand}>
           <span className={styles.brandMark} aria-hidden="true">M</span>
           <div>
-            <small>MAAV / GATE 2</small>
-            <h1>Stress Lab Agency Proof</h1>
+            <small>MAAV / GATE 7</small>
+            <h1>Stress Lab WebMCP Authority</h1>
           </div>
         </div>
-        <div className={styles.revision} aria-label={`Workspace revision ${domain.revision}`}>
-          <span>WORKSPACE REVISION</span>
-          <strong>{domain.revision}</strong>
+        <div className={styles.revision} aria-label={`Application revision ${view?.revision ?? 0}`}>
+          <span>APPLICATION REVISION</span>
+          <strong>{view?.revision ?? 0}</strong>
         </div>
       </header>
 
       <section className={styles.truthStrip} aria-label="Prototype disclosure">
         <span aria-hidden="true" />
-        <strong>{STRESS_LAB_SPIKE_DISCLOSURE}</strong>
+        <strong>SYNTHETIC SIMULATION • NO LIVE FLEET CONTROL</strong>
         <b>•</b>
-        <span>SYNTHETIC SIMULATION • NO LIVE FLEET CONTROL</span>
+        <span>DETERMINISTIC EVIDENCE • HUMAN REVIEW</span>
       </section>
 
       <section className={styles.hero}>
         <div>
-          <span className={styles.eyebrow}>BROWSER-NATIVE CONTROL PATH</span>
-          <h2>Can an independent agent operate the same state as a human?</h2>
+          <span className={styles.eyebrow}>STATIC TRUSTED CAPABILITIES</span>
+          <h2>Six tools, one revision-safe application authority.</h2>
           <p>
-            This isolated proof registers two real WebMCP tools. It validates
-            shared state, revisions, provenance, and UI synchronization before
-            any mobility simulator is built.
+            This diagnostic surface proves browser registration, committed-state
+            visibility, and transient activity. It is not the Gate 8 operator UI.
           </p>
         </div>
         <aside
@@ -228,84 +75,75 @@ export function StressLabSpike() {
       </section>
 
       <section className={styles.workspace}>
-        <div className={styles.scenarioGrid} aria-label="Provisional scenarios">
-          <ScenarioCard
-            slot="A"
-            revision={domain.revision}
-            scenario={domain.scenarios.A}
-            selected={ui.selectedSlot === "A"}
-          />
-          <ScenarioCard
-            slot="B"
-            revision={domain.revision}
-            scenario={domain.scenarios.B}
-            selected={ui.selectedSlot === "B"}
-          />
-        </div>
+        <section className={styles.toolCatalog} aria-labelledby="catalog-title">
+          <header>
+            <div>
+              <small>STATIC CATALOG</small>
+              <h2 id="catalog-title">Trusted lab capabilities</h2>
+            </div>
+            <span>6 TOOLS</span>
+          </header>
+          <ol>
+            {STRESS_LAB_WEBMCP_TOOL_NAMES.map((name) => (
+              <li key={name}>
+                <code>{name}</code>
+                <span>Registered for the full tab lifecycle</span>
+              </li>
+            ))}
+          </ol>
+          <p>Accept, Challenge, and Reset remain visible human-only commands.</p>
+        </section>
 
         <aside className={styles.proofRail}>
-          <section className={styles.toolCatalog}>
+          <section className={styles.toolCatalog} aria-labelledby="state-title">
             <header>
               <div>
-                <small>STATIC CATALOG</small>
-                <h2>Gate 2 tools</h2>
+                <small>COMMITTED STATE</small>
+                <h2 id="state-title">Current evidence</h2>
               </div>
-              <span>2 TOOLS</span>
             </header>
             <ol>
-              <li>
-                <code>read_lab_state</code>
-                <span>Read-only inspection</span>
-              </li>
-              <li>
-                <code>configure_scenario</code>
-                <span>Revision-safe mutation</span>
-              </li>
+              <li><code>Scenario A</code><span>{view?.scenarios.A?.id ?? "Not configured"}</span></li>
+              <li><code>Scenario B</code><span>{view?.scenarios.B?.id ?? "Not configured"}</span></li>
+              <li><code>Comparison</code><span>{view?.currentComparison?.id ?? "Not available"}</span></li>
+              <li><code>Finding</code><span>{view?.currentFinding?.review ?? "Not staged"}</span></li>
             </ol>
-            <p>
-              Catalog names describe the intended static contract. Registration
-              status above reports whether this browser actually exposed them.
-            </p>
           </section>
 
           <section className={styles.activityPanel} aria-labelledby="activity-title">
             <header>
               <div>
-                <small>ATTRIBUTABLE OPERATIONS</small>
+                <small>TRANSIENT WEBMCP</small>
                 <h2 id="activity-title">Activity evidence</h2>
               </div>
               <span>{ui.activities.length}</span>
             </header>
             {ui.activities.length === 0 ? (
-              <div className={styles.emptyActivity}>
-                No actions yet. Use a manual control or invoke a registered
-                WebMCP tool.
-              </div>
+              <div className={styles.emptyActivity}>No browser-agent activity yet.</div>
             ) : (
               <ol className={styles.activityList}>
-                {ui.activities.map((activity) => (
-                  <li key={activity.id}>
-                    <span
-                      className={`${styles.activityNode} ${styles[activity.status.toLowerCase()]}`}
-                      aria-hidden="true"
-                    />
-                    <div>
-                      <strong>{activity.title}</strong>
-                      <code>{activity.actionName}</code>
-                      <p>{activity.summary}</p>
-                      <small>
-                        {activity.source} • {activity.status}
-                        {activity.resultingRevision === undefined
-                          ? ""
-                          : ` • REV ${activity.resultingRevision}`}
-                        {activity.detailCode ? ` • ${activity.detailCode}` : ""}
-                      </small>
-                    </div>
-                    <time dateTime={activity.startedAt}>
-                      {activity.startedAt.slice(11, 19)}Z
-                    </time>
-                  </li>
-                ))}
+                {ui.activities.map((activity) => {
+                  const status = activity.transitions.at(-1)?.status ?? "RECEIVED";
+                  return (
+                    <li key={activity.id}>
+                      <span className={styles.activityNode} aria-hidden="true" />
+                      <div>
+                        <strong>{activity.toolName}</strong>
+                        <code>{activity.operationId ?? "read-only"}</code>
+                        <p>{activity.argumentSummary}</p>
+                        <small>
+                          WEBMCP • {status}
+                          {activity.resultingRevision === undefined
+                            ? ""
+                            : ` • REV ${activity.resultingRevision}`}
+                        </small>
+                      </div>
+                      <time dateTime={activity.startedAt}>
+                        {activity.startedAt.slice(11, 19)}Z
+                      </time>
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </section>
@@ -313,8 +151,8 @@ export function StressLabSpike() {
       </section>
 
       <footer className={styles.footer}>
-        <span>NO GOOGLE • NO EXTERNAL API • NO SIMULATION ENGINE</span>
-        <span>MANUAL UI → SHARED SERVICE ← WEBMCP</span>
+        <span>NO GOOGLE • NO LIVE DATA • NO OPERATIONAL CONTROL</span>
+        <span>WEBMCP → SHARED SERVICE → TRUSTED ARTIFACTS</span>
       </footer>
     </main>
   );

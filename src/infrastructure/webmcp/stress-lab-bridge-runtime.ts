@@ -1,51 +1,54 @@
 import { DrainAwareToolRegistry } from "./registry";
+import { STRESS_LAB_WEBMCP_TOOL_NAMES } from "./stress-lab-tools";
 
 export type StressLabBridgeStatus =
   | {
-      status: "CHECKING";
-      message: "Registering two static Chrome WebMCP tools…";
+      readonly status: "CHECKING";
+      readonly message: "Registering six static Chrome WebMCP tools…";
     }
   | {
-      status: "AVAILABLE";
-      message: "2 static Chrome WebMCP tools registered";
+      readonly status: "AVAILABLE";
+      readonly message: "6 static Chrome WebMCP tools registered";
     }
   | {
-      status: "UNAVAILABLE";
-      message: "WebMCP unavailable — manual mode active";
+      readonly status: "UNAVAILABLE";
+      readonly message: "WebMCP unavailable — manual mode active";
     }
   | {
-      status: "ERROR";
-      message: string;
+      readonly status: "ERROR";
+      readonly message: string;
     };
 
 type StatusListener = (status: StressLabBridgeStatus) => void;
 
 interface ActiveStressLabBridgeRuntime {
-  modelContext: WebMCP.ModelContext;
-  registry: DrainAwareToolRegistry;
+  readonly modelContext: WebMCP.ModelContext;
+  readonly registry: DrainAwareToolRegistry;
+  readonly listeners: Set<StatusListener>;
   refs: number;
-  listeners: Set<StatusListener>;
   status: StressLabBridgeStatus;
   ready: Promise<void>;
   cleanupTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface StressLabBridgeLease {
-  ready: Promise<void>;
+  readonly ready: Promise<void>;
   release(): void;
 }
 
 const STRICT_MODE_DRAIN_GRACE_MS = 100;
-const GATE_2_TOOL_NAMES = ["read_lab_state", "configure_scenario"] as const;
+const EXPECTED_NAMES = [...STRESS_LAB_WEBMCP_TOOL_NAMES].sort();
 
-function hasExactGateTwoCatalog(
-  definitions: readonly WebMCP.ModelContextTool[],
-): boolean {
+function sortedNames(definitions: readonly { readonly name: string }[]): string[] {
+  return definitions.map((definition) => definition.name).sort();
+}
+
+function hasExactCatalog(definitions: readonly WebMCP.ModelContextTool[]): boolean {
+  const names = sortedNames(definitions);
   return (
-    definitions.length === GATE_2_TOOL_NAMES.length &&
-    definitions.every(
-      (definition, index) => definition.name === GATE_2_TOOL_NAMES[index],
-    )
+    names.length === EXPECTED_NAMES.length &&
+    new Set(names).size === names.length &&
+    names.every((name, index) => name === EXPECTED_NAMES[index])
   );
 }
 
@@ -75,24 +78,22 @@ export class StaticStressLabBridgeCoordinator {
     definitions: readonly WebMCP.ModelContextTool[],
     listener: StatusListener,
   ): StressLabBridgeLease {
-    if (!hasExactGateTwoCatalog(definitions)) {
-      const status: StressLabBridgeStatus = {
+    if (!hasExactCatalog(definitions)) {
+      listener({
         status: "ERROR",
-        message: "Gate 2 WebMCP catalog is invalid — manual mode active",
-      };
-      listener(status);
+        message: "Stress Lab WebMCP catalog is invalid — manual mode active",
+      });
       return { ready: Promise.resolve(), release: () => undefined };
     }
 
     const current = this.runtime;
     if (current) {
       if (current.modelContext !== modelContext) {
-        const status: StressLabBridgeStatus = {
+        listener({
           status: "ERROR",
           message:
             "A different WebMCP document context is still draining — manual mode active",
-        };
-        listener(status);
+        });
         return { ready: Promise.resolve(), release: () => undefined };
       }
       current.refs += 1;
@@ -108,21 +109,19 @@ export class StaticStressLabBridgeCoordinator {
       };
     }
 
-    const registry = new DrainAwareToolRegistry(modelContext);
     const runtime: ActiveStressLabBridgeRuntime = {
       modelContext,
-      registry,
+      registry: new DrainAwareToolRegistry(modelContext),
       refs: 1,
       listeners: new Set([listener]),
       status: {
         status: "CHECKING",
-        message: "Registering two static Chrome WebMCP tools…",
+        message: "Registering six static Chrome WebMCP tools…",
       },
       ready: Promise.resolve(),
     };
     this.runtime = runtime;
     listener(runtime.status);
-
     runtime.ready = this.register(runtime, definitions);
     return {
       ready: runtime.ready,
@@ -140,10 +139,18 @@ export class StaticStressLabBridgeCoordinator {
   ): Promise<void> {
     try {
       await runtime.registry.reconcile([...definitions]);
+      const visible = await runtime.modelContext.getTools();
+      const visibleNames = sortedNames(visible);
+      if (
+        visibleNames.length !== EXPECTED_NAMES.length ||
+        !visibleNames.every((name, index) => name === EXPECTED_NAMES[index])
+      ) {
+        throw new Error("Registered WebMCP catalog does not match the six-tool contract.");
+      }
       if (this.runtime !== runtime) return;
       this.publish(runtime, {
         status: "AVAILABLE",
-        message: "2 static Chrome WebMCP tools registered",
+        message: "6 static Chrome WebMCP tools registered",
       });
     } catch (error) {
       await runtime.registry.destroy();
@@ -168,7 +175,6 @@ export class StaticStressLabBridgeCoordinator {
     runtime.listeners.delete(listener);
     runtime.refs = Math.max(0, runtime.refs - 1);
     if (runtime.refs > 0 || runtime.cleanupTimer) return;
-
     runtime.cleanupTimer = setTimeout(() => {
       runtime.cleanupTimer = undefined;
       if (this.runtime !== runtime || runtime.refs > 0) return;
@@ -184,13 +190,17 @@ export class StaticStressLabBridgeCoordinator {
   }
 }
 
-interface StressLabBridgeGlobal {
-  __maavStressLabBridgeCoordinatorV1?: StaticStressLabBridgeCoordinator;
+declare global {
+  interface Window {
+    __maavStressLabBridgeCoordinatorV2?: StaticStressLabBridgeCoordinator;
+  }
 }
 
 export function getStressLabBridgeCoordinator(): StaticStressLabBridgeCoordinator {
-  const globalScope = globalThis as typeof globalThis & StressLabBridgeGlobal;
-  globalScope.__maavStressLabBridgeCoordinatorV1 ??=
+  if (typeof window === "undefined") {
+    throw new Error("Stress Lab WebMCP registration is browser-only.");
+  }
+  window.__maavStressLabBridgeCoordinatorV2 ??=
     new StaticStressLabBridgeCoordinator();
-  return globalScope.__maavStressLabBridgeCoordinatorV1;
+  return window.__maavStressLabBridgeCoordinatorV2;
 }

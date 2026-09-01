@@ -1,140 +1,209 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-interface BrowserToolResult {
-  ok: boolean;
-  stateRevision: number;
-  error?: { code: string };
-}
+const TOOL_NAMES = [
+  "compare_scenarios",
+  "configure_scenario",
+  "inject_disruption",
+  "read_lab_state",
+  "run_scenario",
+  "stage_finding",
+] as const;
 
-async function installModelContextMock(page: import("@playwright/test").Page) {
+const CONFIGURATION = {
+  label: "Twelve compact pods",
+  fleet: {
+    vehicleCount: 12,
+    seatsPerVehicle: 8,
+    batteryCapacityKWh: 70,
+    startingBatteryPercent: 82,
+    minimumReservePercent: 20,
+    energyKWhPerKm: 0.21,
+    dwellSeconds: 30,
+    initialZoneWeights: {
+      sandton: 30,
+      parkmore: 15,
+      illovo: 20,
+      rosebank: 25,
+      "melrose-arch": 10,
+    },
+  },
+  constraints: {
+    maximumWaitSeconds: 180,
+    maximumUnservedPassengers: 12,
+    minimumBatteryReservePercent: 20,
+    maximumRecoverySeconds: 600,
+    standingAllowed: false,
+  },
+  objectives: [
+    "LOWER_WAIT",
+    "LOWER_ENERGY_PER_PASSENGER_KM",
+    "HIGHER_UTILIZATION",
+    "FASTER_RECOVERY",
+    "LOWER_EMPTY_KM",
+  ],
+};
+
+async function installModelContextMock(page: Page) {
   await page.addInitScript(() => {
-    const registered = new Map<string, WebMCP.ModelContextTool>();
+    const registered = new Map<
+      string,
+      { tool: WebMCP.ModelContextTool; signal?: AbortSignal }
+    >();
+    const context = {
+      registerTool: async (
+        tool: WebMCP.ModelContextTool,
+        options?: WebMCP.ModelContextRegisterToolOptions,
+      ) => {
+        registered.set(tool.name, { tool, signal: options?.signal });
+      },
+      getTools: async () =>
+        [...registered.values()]
+          .filter((entry) => !entry.signal?.aborted)
+          .map((entry) => entry.tool),
+    };
     Object.defineProperty(document, "modelContext", {
       configurable: true,
-      value: {
-        registerTool: async (tool: WebMCP.ModelContextTool) => {
-          registered.set(tool.name, tool);
-        },
-        getTools: async () => [...registered.values()],
-      },
+      value: context,
     });
-    Object.assign(window, {
-      __gate2Tools: registered,
-      __gate2RegistrationNames: [] as string[],
-    });
-    const originalRegister = document.modelContext!.registerTool.bind(
-      document.modelContext,
-    );
-    document.modelContext!.registerTool = async (tool, options) => {
-      (
-        window as typeof window & { __gate2RegistrationNames: string[] }
-      ).__gate2RegistrationNames.push(tool.name);
-      return originalRegister(tool, options);
-    };
+    Object.assign(window, { __gate7Tools: registered });
   });
 }
 
-async function invokeTool(
-  page: import("@playwright/test").Page,
+async function invoke(
+  page: Page,
   name: string,
   input: Record<string, unknown>,
-): Promise<BrowserToolResult> {
+) {
   return page.evaluate(
     async ({ toolName, args }) => {
-      const tools = (
+      const registered = (
         window as typeof window & {
-          __gate2Tools: Map<string, WebMCP.ModelContextTool>;
+          __gate7Tools: Map<
+            string,
+            { tool: WebMCP.ModelContextTool; signal?: AbortSignal }
+          >;
         }
-      ).__gate2Tools;
-      const tool = tools.get(toolName);
+      ).__gate7Tools;
+      const tool = registered.get(toolName)?.tool;
       if (!tool) throw new Error(`Tool not registered: ${toolName}`);
-      return (await tool.execute(args, {
-        signal: new AbortController().signal,
-      })) as BrowserToolResult;
+      return tool.execute(args, { signal: new AbortController().signal });
     },
     { toolName: name, args: input },
-  );
+  ) as Promise<{
+    ok: boolean;
+    stateRevision: number;
+    artifactId?: string;
+    summary?: Record<string, unknown>;
+    error?: { code: string };
+  }>;
 }
 
-test("WebMCP adapter and manual UI operate the same visible Gate 2 state", async ({
-  page,
-}) => {
+test("six static tools complete the trusted browser workflow", async ({ page }) => {
+  test.setTimeout(60_000);
   await installModelContextMock(page);
   await page.goto("/lab");
-  await expect(page.getByText("PROVISIONAL INTEGRATION-TEST STATE")).toBeVisible();
-  await expect(page.getByText("2 static Chrome WebMCP tools registered")).toBeVisible();
+  await expect(page.getByText("6 static Chrome WebMCP tools registered")).toBeVisible();
 
   const catalog = await page.evaluate(async () =>
-    (await document.modelContext!.getTools!()).map((tool) => tool.name),
+    (await document.modelContext!.getTools()).map((tool) => tool.name).sort(),
   );
-  expect(catalog).toEqual(["read_lab_state", "configure_scenario"]);
+  expect(catalog).toEqual(TOOL_NAMES);
 
-  const initial = await invokeTool(page, "read_lab_state", {
-    scope: "SUMMARY",
-  });
-  expect(initial).toMatchObject({ ok: true, stateRevision: 0 });
+  let read = await invoke(page, "read_lab_state", {});
+  expect(read).toMatchObject({ ok: true, stateRevision: 0 });
 
-  const configured = await invokeTool(page, "configure_scenario", {
-    operationId: "browser-gate2-a-r1",
-    expectedRevision: 0,
+  const configureA = await invoke(page, "configure_scenario", {
+    operationId: "e2e-configure-a",
+    expectedRevision: read.stateRevision,
     slot: "A",
     mode: "REPLACE",
-    configuration: {
-      label: "Agent-configured compact pods",
-      fleet: { vehicleCount: 12, seatsPerVehicle: 8 },
-    },
+    configuration: CONFIGURATION,
   });
-  expect(configured).toMatchObject({ ok: true, stateRevision: 1 });
-  await expect(page.getByRole("heading", { name: "Agent-configured compact pods" })).toBeVisible();
-  await expect(page.getByText("WEBMCP • SUCCEEDED • REV 1")).toBeVisible();
-  await expect(page.getByLabel("Workspace revision 1")).toBeVisible();
+  expect(configureA.ok).toBe(true);
+  read = await invoke(page, "read_lab_state", {});
+  expect(read.stateRevision).toBe(configureA.stateRevision);
 
-  const readBack = await invokeTool(page, "read_lab_state", {
-    scope: "SCENARIO",
-    objectId: "A",
-  });
-  expect(readBack).toMatchObject({ ok: true, stateRevision: 1 });
-
-  const invalid = await invokeTool(page, "configure_scenario", {
-    operationId: "browser-invalid",
-    expectedRevision: 1,
-    slot: "A",
+  const configureB = await invoke(page, "configure_scenario", {
+    operationId: "e2e-configure-b",
+    expectedRevision: read.stateRevision,
+    slot: "B",
     mode: "REPLACE",
     configuration: {
-      label: "Invalid extra field",
-      fleet: { vehicleCount: 12, seatsPerVehicle: 8 },
+      ...CONFIGURATION,
+      label: "Ten higher-capacity pods",
+      fleet: { ...CONFIGURATION.fleet, vehicleCount: 10, seatsPerVehicle: 10 },
     },
-    forbidden: true,
   });
-  expect(invalid).toMatchObject({
-    ok: false,
-    stateRevision: 1,
-    error: { code: "INVALID_ARGUMENTS" },
+  expect(configureB.ok).toBe(true);
+
+  const injectA = await invoke(page, "inject_disruption", {
+    operationId: "e2e-inject-a",
+    expectedRevision: configureB.stateRevision,
+    scenarioRevisionId: configureA.artifactId,
+    disruption: {
+      type: "VEHICLE_FAILURE",
+      target: {
+        kind: "DETERMINISTIC_RULE",
+        rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID",
+      },
+      atSecond: 720,
+    },
   });
-  await expect(page.getByLabel("Workspace revision 1")).toBeVisible();
-  await expect(page.getByText("WEBMCP • REJECTED • REV 1")).toBeVisible();
+  expect(injectA.ok).toBe(true);
+  const injectB = await invoke(page, "inject_disruption", {
+    operationId: "e2e-inject-b",
+    expectedRevision: injectA.stateRevision,
+    scenarioRevisionId: configureB.artifactId,
+    disruption: {
+      type: "VEHICLE_FAILURE",
+      target: {
+        kind: "DETERMINISTIC_RULE",
+        rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID",
+      },
+      atSecond: 720,
+    },
+  });
+  expect(injectB.ok).toBe(true);
 
-  await page.getByRole("button", { name: "Configure Scenario B" }).click();
-  await expect(page.getByRole("heading", { name: "Ten higher-capacity pods" })).toBeVisible();
-  await expect(page.getByText("HUMAN_UI • SUCCEEDED • REV 2")).toBeVisible();
-  await expect(page.getByLabel("Workspace revision 2")).toBeVisible();
+  const runA = await invoke(page, "run_scenario", {
+    operationId: "e2e-run-a",
+    expectedRevision: injectB.stateRevision,
+    scenarioRevisionId: injectA.artifactId,
+  });
+  expect(runA.ok).toBe(true);
+  const runB = await invoke(page, "run_scenario", {
+    operationId: "e2e-run-b",
+    expectedRevision: runA.stateRevision,
+    scenarioRevisionId: injectB.artifactId,
+  });
+  expect(runB.ok).toBe(true);
 
-  const registrations = await page.evaluate(
-    () =>
-      (
-        window as typeof window & { __gate2RegistrationNames: string[] }
-      ).__gate2RegistrationNames,
-  );
-  expect(registrations).toEqual(["read_lab_state", "configure_scenario"]);
+  const comparison = await invoke(page, "compare_scenarios", {
+    operationId: "e2e-compare",
+    expectedRevision: runB.stateRevision,
+    runAId: runA.artifactId,
+    runBId: runB.artifactId,
+  });
+  expect(comparison.ok).toBe(true);
+  const finding = await invoke(page, "stage_finding", {
+    operationId: "e2e-stage",
+    expectedRevision: comparison.stateRevision,
+    comparisonId: comparison.artifactId,
+    selectedOutcome: "TRADE_OFF",
+    emphasis: "BALANCED",
+  });
+  expect(finding).toMatchObject({
+    ok: true,
+    summary: { review: "PENDING_REVIEW" },
+  });
+
+  await expect(page.getByText("PENDING_REVIEW")).toBeVisible();
+  await expect(page.getByText("stage_finding", { exact: true })).toBeVisible();
 });
 
-test("unsupported WebMCP degrades honestly while manual mode remains usable", async ({
-  page,
-}) => {
+test("unsupported WebMCP remains an honest diagnostic fallback", async ({ page }) => {
   await page.goto("/lab");
   await expect(page.getByText("WebMCP unavailable — manual mode active")).toBeVisible();
-  await page.getByRole("button", { name: "Configure Scenario A" }).click();
-  await expect(page.getByRole("heading", { name: "Twelve compact pods" })).toBeVisible();
-  await expect(page.getByLabel("Workspace revision 1")).toBeVisible();
-  await expect(page.getByText("HUMAN_UI • SUCCEEDED • REV 1")).toBeVisible();
+  await expect(page.getByText("SYNTHETIC SIMULATION • NO LIVE FLEET CONTROL")).toBeVisible();
+  await expect(page.getByText("No browser-agent activity yet.")).toBeVisible();
 });

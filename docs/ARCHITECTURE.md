@@ -6,8 +6,9 @@ This document owns target system boundaries, dependency direction, artifact
 flow, state ownership, adapter responsibilities, and atomic command behavior.
 Gates 3–5 implement deterministic inputs, verified simulations, trusted
 comparisons, and deterministic finding candidates. Gate 6 implements the
-headless application authority described below; the current browser runtime
-remains separate until later gated slices integrate it through that boundary.
+headless application authority. Gate 7 exposes it through six static WebMCP
+adapters and pulls forward only the Gate 8.1 tab-scoped Zustand repository and
+runtime composition required to mount that accepted service in a browser.
 
 ## Architectural style
 
@@ -231,6 +232,16 @@ no partial comparison. A new current run, either scenario edit, or reset makes
 dependent comparison and finding pointers stale transitively while immutable
 historical records remain inspectable.
 
+A successful configuration or disruption mutation derives invalidation from
+the authoritative pre-transition pointers inside the same compare-and-swap
+boundary that creates the next scenario revision. Its result reports only the
+committed current run for the edited slot, then its dependent current
+comparison, then that comparison's current finding. The transition clears
+exactly those current pointers, retains all historical artifacts and reviews,
+and appends one audit entry ordered as the new scenario-revision ID followed by
+the same invalidated run, comparison, and finding IDs. An unaffected other-slot
+run remains current.
+
 Finding staging accepts exactly a current comparison ID, a proposed outcome
 (`A`, `B`, `TRADE_OFF`, or `INCONCLUSIVE`), and an operational emphasis
 (`BALANCED`, `SERVICE`, `ENERGY`, or `RESILIENCE`), plus application revision
@@ -242,15 +253,27 @@ Challenge update a separate application review record only while that finding
 is current; they cannot alter run, comparison, claim, caveat, or evidence
 identities and do not dispatch or execute anything.
 
+One current finding may await review at a time. The operation cache resolves an
+exact retry of the staging operation before this prerequisite is evaluated, so
+the retry returns its original result. Any different staging operation fails
+with `PREREQUISITE_NOT_MET` while the current finding is pending and consumes no
+revision, audit entry, or artifact ID. Human Accept or Challenge resolves that
+review state; a new operation at the latest revision may then stage another
+candidate without changing the earlier finding or review history. The same
+pending check is repeated inside the publication compare-and-swap boundary.
+
 ### Repository adapter
 
 The application depends on a repository port, not Zustand. The H0
 infrastructure adapter keeps tab-scoped in-memory/session state and supports an
 atomic compare-and-swap commit.
 
-Gate 6 defines this port and uses a controlled in-memory test adapter. The
-Zustand implementation remains Gate 8 work; neither the domain nor the Gate 6
-service imports Zustand.
+Gate 6 defines this port and uses a controlled in-memory test adapter. Gate 7
+adds the production Zustand implementation early because a real WebMCP call
+must publish into the same tab-scoped runtime that Gate 8 will render. The
+adapter is composed once per browser tab, survives React Strict Mode remounts
+and HMR, and is never shared across tabs. Neither domain nor application code
+imports Zustand.
 
 Repository responsibilities:
 
@@ -275,6 +298,26 @@ The browser adapter:
 - calls the shared application service;
 - serializes compact common envelopes;
 - renders best-effort visible activity after obtaining the authoritative result.
+
+Gate 7 registers the complete catalog against the real
+`document.modelContext` API from one secure top-level `/lab` bridge. Catalog
+membership is compared as a sorted set and never reconciled from application
+state. Registration uses mount-owned abort signals; teardown waits for active
+handlers to settle before unregistering. A registration failure drains and
+rolls back the entire catalog rather than leaving a partial capability set.
+
+The adapter injects the frozen `WEBMCP` invocation context; source is absent
+from every tool schema. A tab-scoped envelope cache sits outside trusted
+evidence so an identical operation retry returns the original compact terminal
+result unchanged. A different command under the same operation ID fails
+closed. The cache does not replace application idempotency or publication
+guards and contributes nothing to scenario, run, comparison, or finding
+fingerprints.
+
+Transient WebMCP activity records `RECEIVED`, `VALIDATED`, `RUNNING`, then one
+of `COMMITTED`, `FAILED`, or `CANCELLED` with an injected clock. These
+timestamps and durations are presentation diagnostics only; durable audit uses
+the source-aware Gate 6 contract and intentionally contains no wall-clock data.
 
 All tools remain discoverable. Application-level preconditions return structured
 errors for premature calls. Registration timing is not authorization.
@@ -564,7 +607,9 @@ tests unit, contract and E2E
 Only after the manual flow, real WebMCP flow, build, deployment smoke, and
 fallback paths pass may the root route cut over and legacy runtime code be
 removed. The tagged superseded product remains a release contingency, not part
-of Stress Lab.
+of Stress Lab. Its former dynamic WebMCP bridge is disabled during this
+transition, so the only browser-registered public catalog is the static
+six-tool Stress Lab catalog at `/lab`.
 
 ## Documentation ownership
 

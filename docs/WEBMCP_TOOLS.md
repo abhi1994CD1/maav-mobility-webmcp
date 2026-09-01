@@ -2,9 +2,15 @@
 
 ## Status and target
 
-This document owns the future Stress Lab public WebMCP contract. Gate 1 changes
-documentation only; the current runtime tools remain superseded baseline
-behavior until Gate 2 and later implementation gates replace them.
+This document owns the implemented Gate 7 Stress Lab WebMCP contract. The
+secure top-level `/lab` route mounts the accepted application service through a
+tab-scoped production repository; the full manual operator interface remains a
+later gate.
+
+The superseded Recovery Command Center remains available only as a manual
+release contingency while H0 is built. Its dynamic WebMCP bridge is retired;
+it never registers the legacy recovery catalog alongside or instead of these
+six Stress Lab tools.
 
 Target Google Chrome 150:
 
@@ -67,7 +73,7 @@ next action without mutation.
 Every mutating tool requires a bounded opaque `operationId`.
 
 - same ID + same tool + same canonical arguments returns the original terminal
-  result with `status: "REUSED"`;
+  result unchanged;
 - same ID with a different tool or arguments returns
   `IDEMPOTENCY_CONFLICT`;
 - no retry may create duplicate scenario revisions, runs, disruptions,
@@ -98,7 +104,6 @@ ledger. The UI provides detailed evidence inspection by artifact ID.
 {
   "ok": false,
   "operationId": "op-run-a-001",
-  "stateRevision": 18,
   "error": {
     "code": "REVISION_CONFLICT",
     "message": "The experiment changed after it was inspected.",
@@ -110,8 +115,8 @@ ledger. The UI provides detailed evidence inspection by artifact ID.
 }
 ```
 
-Optional `field`, `currentRevision`, `missingFields`, and
-`decisionPoints` appear only when useful. Errors never contain stack traces,
+Optional `field`, `currentRevision`, and `missingFields` appear only when
+useful. Errors never contain stack traces,
 keys, browser storage, raw prompts, arbitrary reflected identifiers, or partial
 success disguised as failure.
 
@@ -119,7 +124,6 @@ Stable H0 error codes include:
 
 ```text
 INVALID_ARGUMENTS
-NEEDS_CLARIFICATION
 INVALID_CONFIGURATION
 PREREQUISITE_NOT_MET
 REVISION_CONFLICT
@@ -322,12 +326,10 @@ Input:
   scenarioRevisionId: string;
   disruption: {
     type: "VEHICLE_FAILURE";
-    target:
-      | { kind: "VEHICLE_ID"; vehicleId: string }
-      | {
-          kind: "DETERMINISTIC_RULE";
-          rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID";
-        };
+    target: {
+      kind: "DETERMINISTIC_RULE";
+      rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID";
+    };
     atSecond: number;
   };
 }
@@ -342,19 +344,34 @@ Prerequisites:
 - current expected revision;
 - referenced scenario revision exists;
 - disruption time is inside the immutable horizon;
-- target or rule is valid;
+- the required deterministic target rule is valid;
 - the command does not rewrite an active or completed run.
 
 Authoritative output:
 
 - new immutable scenario revision and disruption IDs;
 - disruption fingerprint and normalized meaning;
-- invalidated/currentness effects;
+- application-authoritative `invalidatedArtifactIds` in their committed order,
+  without adapter inference;
 - validation result and valid next actions.
 
-Call once for Scenario A and once for Scenario B to apply the equivalent stress
-treatment. The service records the vehicle resolved independently during each
-run.
+One call mutates exactly one explicit scenario revision. If the user did not
+clearly choose Scenario A or B, the browser agent asks before invoking the
+tool: `Apply the equivalent disruption to Scenario A, Scenario B, or both?`
+The bounded conversational answers are `A`, `B`, and `BOTH`, with `BOTH` the
+recommended golden-flow answer. This question is conversation guidance, not a
+tool call, and consumes no operation ID.
+
+When the user chooses `BOTH`, the agent reads current state, calls once for
+Scenario A, waits for that committed revision to become visible, reads the
+latest revision, then calls once for Scenario B with a different operation ID.
+`BOTH` is never a tool value or compound mutation. The service records the
+vehicle resolved independently during each run; the adapter never selects or
+fabricates that vehicle.
+
+Contract tests prove the strict schema and sequential single-call boundary;
+only the actual Chrome browser-agent transcript proves that the conversational
+question was asked and that the agent performed the two-call orchestration.
 
 Visible effect: add the authored incident specification and mark dependent
 current evidence stale. The timeline/map event becomes evidence only after a
@@ -461,35 +478,17 @@ any operational action.
 
 ## Clarification without a seventh tool
 
-When a semantically essential choice is missing, return
-`NEEDS_CLARIFICATION` instead of guessing:
+The H0 `inject_disruption` schema requires both `scenarioRevisionId` and the
+deterministic target object. Missing either field returns `INVALID_ARGUMENTS`
+before application-service invocation; the handler does not reinterpret
+malformed input as a semantic question.
 
-```json
-{
-  "ok": false,
-  "operationId": "op-disrupt-001",
-  "stateRevision": 12,
-  "error": {
-    "code": "NEEDS_CLARIFICATION",
-    "message": "The disruption scope is ambiguous.",
-    "retryable": true,
-    "missingFields": ["scenarioRevisionId"],
-    "decisionPoints": [
-      {
-        "field": "scenario",
-        "question": "Apply the equivalent failure to Scenario A, Scenario B, or both?",
-        "allowedValues": ["A", "B", "BOTH"],
-        "recommended": "BOTH"
-      }
-    ],
-    "nextAction": "ASK_HUMAN_THEN_RETRY"
-  }
-}
-```
-
-The browser agent asks the human and retries with corrected arguments and a new
-operation ID. Decision points are bounded; the application never returns an
-open-ended instruction-execution channel.
+Scenario ambiguity is resolved in the browser-agent conversation before a
+mutation is invoked. No tool call means no operation ID is consumed. Corrected
+arguments require a new operation ID only after a prior call reached the
+source-aware idempotency authority, or for the second explicit call in `BOTH`
+orchestration. There is no confirmation field, hidden consent state, compound
+mutation, or seventh question tool.
 
 ## Static registration lifecycle
 
@@ -502,10 +501,32 @@ not duplicate registrations.
 - Unregister only during authoritative bridge teardown.
 - Track in-flight callbacks and do not abort a registration while its invocation
   is running or its result is settling.
+- Verify the visible catalog through `document.modelContext.getTools()` after
+  registration; catalog order carries no meaning.
 - Application prerequisites protect every consequential call regardless of
   registry timing.
 - The registration controller is distinct from the invocation cancellation
   signal.
+
+## Transient activity and publication visibility
+
+Every invocation records a safe best-effort lifecycle:
+
+```text
+RECEIVED -> VALIDATED -> RUNNING -> COMMITTED | FAILED | CANCELLED
+```
+
+Activity contains only tool name, trusted `WEBMCP` source, bounded operation
+ID/argument summary, safe result identity, revision, error code, and injected
+clock metadata. Raw prompts, labels, passenger data, keys, stack traces, and
+trusted evidence payloads are excluded. Activity is not durable audit and
+cannot alter an idempotency identity or artifact fingerprint.
+
+Mutation success resolves only after the repository commit has notified the
+runtime subscriber and an immediate `read_lab_state` can observe at least the
+returned revision. The exact execution `AbortSignal` reaches `runScenario`;
+the application token/generation and compare-and-swap guard, not a UI promise
+race, decide whether completion or cancellation wins.
 
 ## Stale, incompatible, and late evidence
 

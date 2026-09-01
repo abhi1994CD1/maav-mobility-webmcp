@@ -10,10 +10,14 @@ const POST_SETTLEMENT_DRAIN_GRACE_MS = 50;
 
 export class DrainAwareToolRegistry {
   private readonly records = new Map<string, RegistrationRecord>();
+  private readonly drainResolvers = new Set<() => void>();
 
   constructor(private readonly modelContext: WebMCP.ModelContext) {}
 
   async reconcile(definitions: WebMCP.ModelContextTool[]): Promise<void> {
+    if (new Set(definitions.map((definition) => definition.name)).size !== definitions.length) {
+      throw new Error("WebMCP tool definitions must use unique names.");
+    }
     const desired = new Map(
       definitions.map((definition) => [definition.name, definition]),
     );
@@ -50,6 +54,10 @@ export class DrainAwareToolRegistry {
 
   async destroy(): Promise<void> {
     await this.reconcile([]);
+    if (this.records.size === 0) return;
+    await new Promise<void>((resolve) => {
+      this.drainResolvers.add(resolve);
+    });
   }
 
   private async register(definition: WebMCP.ModelContextTool): Promise<void> {
@@ -95,6 +103,10 @@ export class DrainAwareToolRegistry {
     if (record.removalTimer) clearTimeout(record.removalTimer);
     record.controller.abort();
     this.records.delete(name);
+    if (this.records.size === 0) {
+      for (const resolve of this.drainResolvers) resolve();
+      this.drainResolvers.clear();
+    }
   }
 
   private schedulePostSettlementRemoval(

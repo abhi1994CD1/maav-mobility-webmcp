@@ -26,6 +26,7 @@ export interface StressLabRuntime {
   readonly activity: ZustandStressLabActivityReporter;
   readonly webMcpResultCache: WebMcpOperationResultCache;
   readObservedView(): NonNullable<StressLabRuntimeStoreState["ui"]["observedView"]>;
+  nextManualOperationId(action: string): string;
   waitForObservedRevision(revision: number): Promise<void>;
   updateWebMcpStatus(status: StressLabWebMcpStatus, message: string): void;
   dispose(): void;
@@ -53,6 +54,7 @@ export function createStressLabRuntime(options: {
     publishObservedStressLabView(store, view);
   });
   publishObservedStressLabView(store, service.readLabState());
+  let manualOperationSequence = 1;
 
   return {
     store,
@@ -64,6 +66,16 @@ export function createStressLabRuntime(options: {
       const view = store.getState().ui.observedView;
       if (!view) throw new Error("Stress Lab runtime view is not initialized.");
       return view;
+    },
+    nextManualOperationId(action) {
+      const safeAction = action
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/gu, "-")
+        .replace(/^-+|-+$/gu, "")
+        .slice(0, 32) || "command";
+      const operationId = `human-${safeAction}-${manualOperationSequence}`;
+      manualOperationSequence += 1;
+      return operationId;
     },
     waitForObservedRevision(revision) {
       if ((store.getState().ui.observedView?.revision ?? -1) >= revision) {

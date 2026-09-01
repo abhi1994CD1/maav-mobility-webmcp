@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
-import { StressLabSpike } from "@/features/stress-lab/StressLabSpike";
+import { StressLab } from "@/features/stress-lab/StressLab";
 
 export const metadata: Metadata = {
-  title: "MAAV Stress Lab — Trusted WebMCP",
+  title: "MAAV Stress Lab — Deterministic Mobility Assurance",
   description:
-    "Six static browser-native tools backed by the trusted deterministic Stress Lab service.",
+    "A synthetic deterministic mobility resilience workbench with trusted evidence and visible human review.",
 };
 
 export default function StressLabPage() {
-  return <StressLabSpike />;
+  return <StressLab />;
 }

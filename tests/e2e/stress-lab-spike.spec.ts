@@ -102,7 +102,7 @@ test("six static tools complete the trusted browser workflow", async ({ page }) 
   test.setTimeout(60_000);
   await installModelContextMock(page);
   await page.goto("/lab");
-  await expect(page.getByText("6 static Chrome WebMCP tools registered")).toBeVisible();
+  await expect(page.getByText("Available · 6 tools")).toBeVisible();
 
   const catalog = await page.evaluate(async () =>
     (await document.modelContext!.getTools()).map((tool) => tool.name).sort(),
@@ -197,13 +197,44 @@ test("six static tools complete the trusted browser workflow", async ({ page }) 
     summary: { review: "PENDING_REVIEW" },
   });
 
-  await expect(page.getByText("PENDING_REVIEW")).toBeVisible();
-  await expect(page.getByText("stage_finding", { exact: true })).toBeVisible();
+  await expect(page.getByText("PENDING HUMAN REVIEW")).toBeVisible();
+  await expect(page.getByText("stage finding", { exact: true })).toBeVisible();
 });
 
-test("unsupported WebMCP remains an honest diagnostic fallback", async ({ page }) => {
+test("complete manual golden workflow shares the authoritative browser runtime", async ({ page }) => {
+  test.setTimeout(90_000);
+  await installModelContextMock(page);
   await page.goto("/lab");
-  await expect(page.getByText("WebMCP unavailable — manual mode active")).toBeVisible();
-  await expect(page.getByText("SYNTHETIC SIMULATION • NO LIVE FLEET CONTROL")).toBeVisible();
-  await expect(page.getByText("No browser-agent activity yet.")).toBeVisible();
+  await page.getByRole("button", { name: "Reset lab" }).click();
+  await expect(page.getByRole("dialog", { name: "Reset the Stress Lab?" })).toBeVisible();
+  await page.getByRole("button", { name: "Confirm reset" }).click();
+
+  await page.getByRole("button", { name: "Configure A" }).click();
+  await page.getByRole("button", { name: "Configure B" }).click();
+  await page.getByRole("button", { name: "Inject 08:42 failure" }).nth(0).click();
+  await page.getByRole("button", { name: "Inject 08:42 failure" }).nth(1).click();
+  await page.getByRole("button", { name: "Run scenario A" }).click();
+  await expect(page.getByText("1,050 s", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Run scenario B" }).click();
+  await expect(page.getByText("780 s", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Compare current runs" }).click();
+  await page.getByRole("button", { name: "Stage trade-off finding" }).click();
+  await expect(page.getByText("PENDING HUMAN REVIEW")).toBeVisible();
+  await expect(page.getByText("TRADE_OFF", { exact: true })).toBeVisible();
+  await expect(page.getByText("BALANCED", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Accept evidence" }).click();
+  await expect(page.getByText("ACCEPTED", { exact: true })).toBeVisible();
+
+  const read = await invoke(page, "read_lab_state", {});
+  expect(read.ok).toBe(true);
+  expect(read.stateRevision).toBeGreaterThan(0);
+});
+
+test("unsupported WebMCP remains an honest manual-first fallback", async ({ page }) => {
+  await page.goto("/lab");
+  await expect(page.getByText("Manual mode")).toBeVisible();
+  await expect(page.getByText("SYNTHETIC SIMULATION")).toBeVisible();
+  await expect(page.getByText("NO LIVE FLEET CONTROL")).toBeVisible();
+  await expect(page.getByText("No operation activity")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset lab" })).toBeEnabled();
 });

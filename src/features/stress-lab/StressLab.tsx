@@ -17,6 +17,10 @@ import { ComparisonPanel } from "./ComparisonPanel";
 import { FindingReview } from "./FindingReview";
 import { MetricsPanel } from "./MetricsPanel";
 import { ScenarioPanel } from "./ScenarioPanel";
+import {
+  StressLabMap,
+  type GoogleMapReadiness,
+} from "./map/StressLabMap";
 import styles from "./stress-lab.module.css";
 
 const GOLDEN_PROMPT =
@@ -43,6 +47,12 @@ function StressLabWorkbench({ runtime }: { readonly runtime: StressLabRuntime })
   const manual = useManualControllerState(controller);
   const resetDialog = useRef<HTMLDialogElement>(null);
   const [promptCopied, setPromptCopied] = useState(false);
+  const [mapReadiness, setMapReadiness] = useState<GoogleMapReadiness>(
+    process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY &&
+      process.env.NEXT_PUBLIC_GOOGLE_MAP_ID
+      ? "LOADING"
+      : "CONFIG_ERROR",
+  );
 
   if (!presentation) return <StressLabLoading />;
 
@@ -100,7 +110,9 @@ function StressLabWorkbench({ runtime }: { readonly runtime: StressLabRuntime })
           <span><b>NETWORK</b> {network}</span>
           <span><b>SEED</b> {seed === undefined ? "—" : String(seed).padStart(2, "0")}</span>
           <span className={styles.readyFact}><b>ENGINE</b> Ready</span>
-          <span><b>MAP</b> Presentation deferred · evidence valid</span>
+          <span className={mapReadiness === "READY" ? styles.readyFact : styles.warningFact}>
+            <b>MAP</b> {mapReadiness === "READY" ? "Google presentation ready" : `${mapReadiness.replace("_", " ")} · evidence valid`}
+          </span>
         </div>
         <button
           type="button"
@@ -146,6 +158,11 @@ function StressLabWorkbench({ runtime }: { readonly runtime: StressLabRuntime })
           <small>PROVENANCE-SAFE · NO CHAT UI</small>
         </button>
       </section>
+
+      <StressLabMap
+        application={presentation.application}
+        onReadinessChange={setMapReadiness}
+      />
 
       {progress ? (
         <section className={styles.progressStrip} aria-live="polite" aria-label={`${progress.target} progress`}>

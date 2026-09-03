@@ -17,11 +17,11 @@ Describe the experiment. Stress the alternatives. Decide from reproducible evide
 
 [**Launch NeoLab**](https://maav-mobility-webmcp.vercel.app/lab) · [Architecture](docs/ARCHITECTURE.md) · [Six WebMCP tools](docs/WEBMCP_TOOLS.md)
 
-**MAAV Stress Lab · Synthetic simulation · No live fleet control · Human-reviewed findings**
+**MAAV NeoLab · Synthetic simulation · No live fleet control · Human-reviewed findings**
 
 </div>
 
-![MAAV Stress Lab showing the authored Sandton–Rosebank replay at the deterministic 08:42 vehicle failure](artifacts/gate9-correction/scenario-a-road-geometry-1440x900.jpg)
+![ChatGPT operating the MAAV NeoLab WebMCP workflow alongside the deterministic Sandton–Rosebank replay](artifacts/readme/maav-neolab-chatgpt-webmcp.png)
 
 ## From imagination to evidence
 
@@ -102,7 +102,7 @@ This narrowness is a trust feature. New mobility modes can be added later as exp
 
 ## The evidence chain
 
-MAAV Stress Lab—the first working lab inside NeoLab—makes the experiment itself inspectable:
+MAAV NeoLab makes the experiment itself inspectable:
 
 ```text
 scenario revision
@@ -115,7 +115,7 @@ scenario revision
 
 A human or compatible browser agent can configure Scenario A and Scenario B, apply the same documented failure policy, run both against one shared passenger trace, compare trusted artifacts, and stage a finding. Every current result remains linked to the exact scenario, ledger, run, and fingerprint that produced it.
 
-> MAAV Stress Lab is a synthetic decision-support experiment workbench. It is not a live fleet dashboard, operational dispatcher, autonomous optimizer, digital twin, or scientifically calibrated transport model.
+> MAAV NeoLab is a synthetic decision-support experiment workbench. It is not a live fleet dashboard, operational dispatcher, autonomous optimizer, digital twin, or scientifically calibrated transport model.
 
 ## The golden experiment
 
@@ -172,7 +172,7 @@ All six tools remain discoverable throughout the lifecycle. Strict validation, r
 
 Use this prompt in a supported Chrome/WebMCP browser-agent surface:
 
-> Configure the seed-07 A/B Stress Lab, apply the equivalent deterministic 08:42 failure to each scenario, run both, compare verified evidence, and stage a TRADE_OFF / BALANCED finding for human review.
+> Configure the seed-07 A/B experiment in MAAV NeoLab, apply the equivalent deterministic 08:42 failure to each scenario, run both, compare verified evidence, and stage a TRADE_OFF / BALANCED finding for human review.
 
 The browser agent may inspect, configure, stress, run, compare, and stage. **Accept**, **Challenge**, and deterministic **Reset** remain visible human-only controls and do not exist in WebMCP.
 
@@ -298,9 +298,9 @@ Native browser-agent behavior must also be smoke-tested in the exact deployed Ch
 
 ## Evidence gallery
 
-| Comparison | Pending human review |
+| Browser-agent comparison | Pending human review |
 |---|---|
-| ![Scenario A and B comparison evidence](artifacts/gate8/maav-gate8-comparison-1440x900.jpg) | ![Trade-off finding pending human review](artifacts/gate8/maav-gate8-pending-review-1366x768.jpg) |
+| ![ChatGPT browser assistant completing the A/B comparison and staging the evidence-backed finding](artifacts/readme/maav-neolab-comparison-finding.png) | ![Trade-off finding pending human review](artifacts/gate8/maav-gate8-pending-review-1366x768.jpg) |
 
 These captures are development evidence. The public demo and final video should be recorded from the same deployed release SHA.
 
@@ -332,6 +332,6 @@ Copyright © 2026 Abhishek Dhar.
 
 Built for **The WebMCP Challenge**.
 
-**MAAV Stress Lab · v0.5**
+**MAAV NeoLab · v0.5**
 
 </div>

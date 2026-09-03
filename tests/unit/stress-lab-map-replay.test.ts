@@ -8,13 +8,21 @@ import {
   type CurrentRunRecord,
   type StressLabApplicationState,
 } from "@/application/stress-lab-ports";
-import { StressLabMap } from "@/features/stress-lab/map/StressLabMap";
+import {
+  shouldRenderAuthoredFallback,
+  StressLabMap,
+} from "@/features/stress-lab/map/StressLabMap";
 import { ReplayClock } from "@/features/stress-lab/map/replay-clock";
+import {
+  ReplayAutoplayQueue,
+  type ReplayAutoplayRequest,
+} from "@/features/stress-lab/map/replay-autoplay";
 import {
   createAuthoredNetworkProjection,
   createReplayModel,
   nearestReplayFrameIndex,
   StressLabMapProjectionError,
+  summarizeReplayFrame,
   type MapCoordinate,
 } from "@/features/stress-lab/map/replay-projection";
 import {
@@ -212,6 +220,48 @@ describe("Gate 9 deterministic map projection", () => {
     expect(snapshots.length).toBeGreaterThan(5);
   });
 
+  it("queues committed A/B replays without interrupting or duplicating the active run", () => {
+    const queue = new ReplayAutoplayQueue();
+    const requestA: ReplayAutoplayRequest = Object.freeze({
+      id: "WEBMCP:41",
+      slot: "A",
+      runId: "run-A-1",
+      source: "WEBMCP",
+    });
+    const requestB: ReplayAutoplayRequest = Object.freeze({
+      id: "WEBMCP:42",
+      slot: "B",
+      runId: "run-B-2",
+      source: "WEBMCP",
+    });
+
+    expect(queue.enqueue(requestA)).toEqual(requestA);
+    expect(queue.getActive()).not.toBe(requestA);
+    expect(Object.isFrozen(queue.getActive())).toBe(true);
+    expect(queue.enqueue(requestB)).toBeNull();
+    expect(queue.enqueue(requestA)).toBeNull();
+    expect(queue.getActive()).toEqual(requestA);
+    expect(queue.settle("WEBMCP:unknown")).toEqual({
+      settled: false,
+      next: requestA,
+      idle: false,
+    });
+    expect(queue.settle(requestA.id)).toEqual({
+      settled: true,
+      next: requestB,
+      idle: false,
+    });
+    expect(queue.getActive()).toEqual(requestB);
+    expect(queue.settle(requestB.id)).toEqual({
+      settled: true,
+      next: null,
+      idle: true,
+    });
+    expect(queue.hasWork()).toBe(false);
+    expect(Object.isFrozen(requestA)).toBe(true);
+    expect(Object.isFrozen(requestB)).toBe(true);
+  });
+
   it("keeps playback, camera, layer, and entity state outside application authority", () => {
     const before = application;
     const beforeRevision = application.revision;
@@ -258,6 +308,10 @@ describe("Gate 9 deterministic map projection", () => {
     expect(freshHtml).toContain('data-testid="persistent-map-hero"');
     expect(freshHtml).toContain("IMMUTABLE BASELINE TOPOLOGY");
     expect(freshHtml).toContain("No committed replay");
+    expect(freshHtml).toContain('data-testid="map-readiness-status"');
+    expect(freshHtml).toContain("INSPECTOR READY");
+    expect(freshHtml).toContain("No replay evidence available");
+    expect(freshHtml).toContain("Authored baseline active");
     expect(freshHtml).toContain("Replay unavailable");
     expect(freshHtml).toMatch(/type="range"[^>]*disabled/u);
     expect(freshHtml).not.toContain("failure evidence active");
@@ -272,6 +326,7 @@ describe("Gate 9 deterministic map projection", () => {
     }));
     expect(configuredHtml).toContain('data-testid="persistent-map-hero"');
     expect(configuredHtml).toContain("No committed replay");
+    expect(configuredHtml).toContain("INSPECTOR READY");
 
     const invalidated = Object.freeze({
       ...application,
@@ -282,9 +337,19 @@ describe("Gate 9 deterministic map projection", () => {
     const invalidatedHtml = renderToStaticMarkup(createElement(StressLabMap, { application: invalidated }));
     expect(invalidatedHtml).toContain('data-testid="persistent-map-hero"');
     expect(invalidatedHtml).toContain("No committed replay");
+    expect(invalidatedHtml).toContain("EVIDENCE INVALIDATED");
+    expect(invalidatedHtml).toContain("Historical evidence preserved");
     expect(invalidatedHtml).not.toContain(runA.id);
     expect(invalidatedHtml).not.toContain(runB.id);
     freshRuntime.dispose();
+  });
+
+  it("keeps authored SVG geometry hidden while the real Google surface is loading", () => {
+    expect(shouldRenderAuthoredFallback("LOADING")).toBe(false);
+    expect(shouldRenderAuthoredFallback("READY")).toBe(false);
+    expect(shouldRenderAuthoredFallback("CONFIG_ERROR")).toBe(true);
+    expect(shouldRenderAuthoredFallback("LOAD_ERROR")).toBe(true);
+    expect(shouldRenderAuthoredFallback("AUTH_ERROR")).toBe(true);
   });
 
   it("builds the strict path-only, driving, traffic-unaware request from authored endpoints", () => {
@@ -470,13 +535,22 @@ describe("Gate 9 deterministic map projection", () => {
     const routePresentation = readFileSync(resolve("src/features/stress-lab/map/route-presentation.ts"), "utf8");
     const css = readFileSync(resolve("src/features/stress-lab/map/stress-lab-map.module.css"), "utf8");
     const html = renderToStaticMarkup(createElement(StressLabMap, { application }));
-    expect(html).toContain("Route presentation legend");
-    expect(html).toContain("Baseline network");
-    expect(html).toContain("Scenario A active");
-    expect(html).toContain("Scenario B active");
-    expect(html).toContain("Selected entity");
-    expect(html).toContain("Failure evidence");
-    expect(html).toContain("Authored fallback");
+    expect(html).toContain('aria-label="Route semantics"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("Route presentation legend");
+    expect(html).toContain("Select a committed entity");
+    expect(html).toContain("Committed snapshot available");
+    expect(html).toContain('data-testid="frame-state-overview"');
+    expect(html).toContain("Snapshot distribution");
+    expect(html).toContain("Find vehicle or passenger by ID");
+    expect(component).toContain('aria-label="Route presentation legend"');
+    expect(component).toContain("Baseline network");
+    expect(component).toContain("Scenario A active");
+    expect(component).toContain("Scenario B active");
+    expect(component).toContain("Selected entity");
+    expect(component).toContain("Failure evidence");
+    expect(component).toContain("Authored fallback");
+    expect(component).toContain("routeLegendOpen ? (");
     expect(ROUTE_SEMANTIC_PALETTE).toEqual({
       baseline: "rgba(100, 116, 139, 0.26)",
       scenarioA: "#67E8F9",
@@ -487,14 +561,50 @@ describe("Gate 9 deterministic map projection", () => {
       evidencePass: "#6EE7B7",
     });
     expect(css).toContain("stroke-dasharray");
-    expect(component).toContain("Google road geometry loading");
-    expect(component).toContain("Google road geometry ready");
+    expect(component).not.toContain("Google road geometry loading");
+    expect(component).not.toContain("Google road geometry ready");
+    expect(component).not.toContain("styles.routeStatus");
+    expect(component).not.toContain("styles.noReplay");
+    expect(component).toContain("Ready · ${replayReadiness}");
     expect(component).toContain('const onReady = useCallback(() => setReadiness');
     expect(component).toContain("summary.googleCount === 0");
     expect(component).toContain('? "ROUTES_UNAVAILABLE"');
-    expect(component).toContain('aria-label="Inspect committed entity"');
-    expect(component).toContain('value={`VEHICLE:${candidate.id}`}');
+    expect(component).not.toContain('aria-label="Inspect committed entity"');
+    expect(component).not.toContain("<optgroup");
+    expect(component).toContain('aria-label="Find vehicle or passenger by ID"');
+    expect(component).toContain("const ENTITY_RESULT_LIMIT = 8");
+    expect(component).toContain('data-testid="frame-state-overview"');
     expect(`${component}\n${routePresentation}`).not.toMatch(/distanceMeters|durationMillis|trafficModel|departureTime|arrivalTime/u);
+  });
+
+  it("projects a bounded current-frame state summary without mutating committed replay evidence", () => {
+    const model = createReplayModel(runA);
+    const frame = model.projectFrame(24);
+    const before = JSON.stringify(frame);
+    const summary = summarizeReplayFrame(frame);
+    expect(summary.vehicleTotal).toBe(frame.vehicles.length);
+    expect(summary.passengerTotal).toBe(frame.passengers.length);
+    expect(summary.vehicles.map(({ state }) => state)).toEqual([
+      "IDLE",
+      "TRAVELLING_EMPTY",
+      "DWELLING",
+      "TRAVELLING_SERVICE",
+      "FAILED",
+    ]);
+    expect(summary.passengers.map(({ state }) => state)).toEqual([
+      "NOT_ARRIVED",
+      "WAITING",
+      "RESERVED",
+      "ONBOARD",
+      "RECOVERY_WAIT",
+      "SERVED",
+    ]);
+    expect(summary.vehicles.reduce((total, item) => total + item.count, 0)).toBe(frame.vehicles.length);
+    expect(summary.passengers.reduce((total, item) => total + item.count, 0)).toBe(frame.passengers.length);
+    expect(Object.isFrozen(summary)).toBe(true);
+    expect(Object.isFrozen(summary.vehicles)).toBe(true);
+    expect(Object.isFrozen(summary.passengers)).toBe(true);
+    expect(JSON.stringify(frame)).toBe(before);
   });
 
   it("keeps one loader surface and excludes legacy APIs, persistence, unsafe HTML, keys, and trusted KPI constants", () => {

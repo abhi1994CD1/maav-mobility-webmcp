@@ -2,9 +2,10 @@
 
 ## Status
 
-This document owns the target demonstration and release proof. Gate 1 is
-documentation-only; do not record or claim this flow until the later runtime,
-browser, deployment, and reproducibility gates pass.
+This document owns the target demonstration and release proof. The local H0
+runtime implements the flow; public claims require the complete sequence to be
+repeated against the exact deployed release in the supported Chrome/WebMCP
+environment.
 
 ## Golden prompt
 

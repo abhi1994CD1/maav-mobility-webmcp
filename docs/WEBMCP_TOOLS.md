@@ -2,10 +2,10 @@
 
 ## Status and target
 
-This document owns the implemented Gate 7 Stress Lab WebMCP contract. The
-secure top-level `/lab` route mounts the accepted application service through a
-tab-scoped production repository; the full manual operator interface remains a
-later gate.
+This document owns the implemented Stress Lab WebMCP contract. The secure
+top-level `/lab` route mounts the shared application service through a
+tab-scoped production repository alongside the complete manual operator
+interface and deterministic replay presentation.
 
 The superseded Recovery Command Center remains available only as a manual
 release contingency while H0 is built. Its dynamic WebMCP bridge is retired;
@@ -156,7 +156,13 @@ type ScenarioConfiguration = {
     minimumReservePercent: number;  // 0–100 and <= starting battery
     energyKWhPerKm: number;         // bounded positive authored assumption
     dwellSeconds: number;           // non-negative multiple of 30
-    initialZoneWeights: Record<string, number>;
+    initialZoneWeights: {
+      sandton: number;
+      parkmore: number;
+      illovo: number;
+      rosebank: number;
+      "melrose-arch": number;
+    };
   };
   constraints: {
     maximumWaitSeconds: number;
@@ -175,6 +181,29 @@ type ScenarioConfiguration = {
 };
 ```
 
+The five authored zone keys are closed-world. All five are required whenever
+`initialZoneWeights` is supplied, each value is a positive integer, and their
+sum must be exactly `100`. Arbitrary names such as `zone1` are not part of the
+`sandton-rosebank-v1` network.
+
+For the seed-07 golden flow, the executable replacement values are:
+
+| Field | Scenario A | Scenario B |
+|---|---:|---:|
+| Label | `Twelve compact pods` | `Ten higher-capacity pods` |
+| Vehicles | 12 | 10 |
+| Seats per vehicle | 8 | 10 |
+| Battery capacity | 70 kWh | 70 kWh |
+| Starting battery | 82% | 82% |
+| Minimum reserve | 20% | 20% |
+| Energy | 0.21 kWh/km | 0.21 kWh/km |
+| Dwell | 30 seconds | 30 seconds |
+
+Both scenarios use zone weights `sandton: 30`, `parkmore: 15`, `illovo: 20`,
+`rosebank: 25`, and `melrose-arch: 10`; maximum wait `180` seconds, maximum
+unserved `12`, maximum recovery `600` seconds, standing disabled, and all five
+listed objectives. These are scenario inputs, not precomputed evidence.
+
 The schema rejects unknown fields, non-finite values, arbitrary URLs, HTML,
 JavaScript, expressions, raw prompts, and caller-supplied KPI claims.
 
@@ -183,6 +212,13 @@ JavaScript, expressions, raw prompts, and caller-supplied KPI claims.
 Purpose: inspect the current experiment revision, scenario/run summaries,
 constraints, disruptions, stale/current status, readiness, and valid or blocked
 next actions.
+
+After a committed run, deterministic replay is available through the visible
+lab Play control. A browser agent can focus and start one current committed run
+without a seventh tool by calling `read_lab_state` with `scope: "RUN"` and that
+run's `objectId`. This changes only ephemeral presentation state; it creates no
+operation ID, revision, audit entry, artifact, activity mutation, or trusted
+fingerprint input.
 
 Input:
 
@@ -212,7 +248,8 @@ It does not return the full ledger, internal state, keys, raw Google context, or
 raw activity prompts.
 
 Visible effect: highlight/focus the requested artifact through ephemeral UI
-state. No workspace revision change.
+state. Focusing a current run starts its exact committed replay. No workspace
+revision change.
 
 Annotations:
 
@@ -227,6 +264,15 @@ human-authored scenario labels.
 
 Purpose: create an immutable Scenario A or B revision from a complete
 configuration or documented bounded patch.
+
+The seed-07 golden replacement uses `mode: "REPLACE"` and the exact labels
+`Twelve compact pods` for Scenario A and `Ten higher-capacity pods` for
+Scenario B. The browser agent must not append slot text or other suffixes,
+because labels are trusted input and therefore change artifact fingerprints.
+An existing disruption is retained by `PATCH`; the agent must inspect the
+current lifecycle and must not inject the same failure again. Vague assent is
+not authority to invent a slot, field, or value—the agent asks for the exact
+change before invoking this mutation.
 
 Input:
 
@@ -335,9 +381,15 @@ Input:
 }
 ```
 
-For the golden experiment, `atSecond: 720` means 08:42 and the deterministic
-rule additionally applies the documented reserved-passenger and active-service
-tie-breaks before ascending vehicle ID.
+`atSecond` is relative seconds from the 08:30 experiment start, never clock
+minutes. For the golden experiment, `atSecond: 720` means 08:42; `522` is not a
+valid representation of that time. The deterministic rule additionally applies
+the documented reserved-passenger and active-service tie-breaks before ascending
+vehicle ID.
+
+The browser agent copies the required constant disruption type, target kind,
+and rule exactly from the registered schema; it does not invent alternative
+enum values.
 
 Prerequisites:
 
@@ -435,6 +487,11 @@ The configuration-difference summary may include bounded human-authored labels.
 
 Purpose: stage a bounded evidence-backed interpretation from one current
 comparison for human review.
+
+The browser agent uses only the `selectedOutcome` and `emphasis` explicitly
+requested by the human. A vague confirmation such as `yes` does not authorize
+the agent to choose either value or stage a new finding; it asks a bounded
+follow-up question first.
 
 Input:
 

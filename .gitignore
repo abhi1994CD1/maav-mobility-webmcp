@@ -40,6 +40,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local hackathon workflow state
+.devpost-hackathon-state.json
+/docs/plans/stress-lab/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

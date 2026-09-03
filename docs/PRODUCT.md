@@ -3,8 +3,9 @@
 ## Status
 
 This document owns product behavior, scope, language, and success criteria for
-MAAV Stress Lab. Gate 1 establishes the contract; it does not claim the Stress
-Lab runtime is implemented.
+MAAV Stress Lab. The H0 runtime now implements the bounded manual and six-tool
+WebMCP experiment; release claims still require verification at the exact
+deployed commit.
 
 ## Product essence
 

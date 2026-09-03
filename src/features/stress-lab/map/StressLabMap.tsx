@@ -11,12 +11,31 @@ import {
   useMap,
 } from "@vis.gl/react-google-maps";
 import {
+  BusFront,
+  Crosshair,
+  Layers,
+  Network,
+  Pause,
+  Play,
+  Radar,
+  RotateCcw,
+  Route as RouteIcon,
+  Search,
+  StepBack,
+  StepForward,
+  TriangleAlert,
+  UsersRound,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import type { StressLabApplicationState } from "@/application/stress-lab-ports";
@@ -25,15 +44,22 @@ import {
   SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
 } from "@/data/scenarios/sandton-rosebank-v1";
 import type { ScenarioSlot } from "@/domain/stress-lab/types";
+import type {
+  ReplayAutoplayOutcome,
+  ReplayAutoplayRequest,
+} from "./replay-autoplay";
 import { ReplayClock, type ReplaySpeed } from "./replay-clock";
 import {
   createAuthoredNetworkProjection,
   createReplayModel,
   nearestReplayFrameIndex,
   StressLabMapProjectionError,
+  summarizeReplayFrame,
   type AuthoredNetworkProjection,
   type MapCoordinate,
   type ReplayFrameProjection,
+  type ReplayFrameStateCount,
+  type ReplayFrameStateSummary,
   type ReplayModel,
   type ReplayPassengerProjection,
   type ReplayVehicleProjection,
@@ -56,6 +82,10 @@ export type GoogleMapReadiness =
   | "LOAD_ERROR"
   | "AUTH_ERROR";
 
+export function shouldRenderAuthoredFallback(readiness: GoogleMapReadiness): boolean {
+  return readiness === "CONFIG_ERROR" || readiness === "LOAD_ERROR" || readiness === "AUTH_ERROR";
+}
+
 type RoutesReadiness =
   | "ROUTES_LOADING"
   | "ROUTES_READY"
@@ -71,6 +101,7 @@ type SelectedEntity =
   | null;
 
 const GOOGLE_LIBRARIES = Object.freeze(["maps", "marker"]);
+const ENTITY_RESULT_LIMIT = 8;
 const DEFAULT_LAYERS: Readonly<Record<LayerKey, boolean>> = Object.freeze({
   network: true,
   vehicles: true,
@@ -78,6 +109,17 @@ const DEFAULT_LAYERS: Readonly<Record<LayerKey, boolean>> = Object.freeze({
   passengers: false,
   failure: true,
 });
+const LAYER_CONTROLS: readonly {
+  readonly key: LayerKey;
+  readonly label: string;
+  readonly icon: LucideIcon;
+}[] = Object.freeze([
+  Object.freeze({ key: "network", label: "Network routes", icon: Network }),
+  Object.freeze({ key: "vehicles", label: "Vehicles", icon: BusFront }),
+  Object.freeze({ key: "demand", label: "Demand", icon: Radar }),
+  Object.freeze({ key: "passengers", label: "Passengers", icon: UsersRound }),
+  Object.freeze({ key: "failure", label: "Failure evidence", icon: TriangleAlert }),
+]);
 const BASELINE_NETWORK = createAuthoredNetworkProjection(
   SANDTON_ROSEBANK_V1_NETWORK,
   SANDTON_ROSEBANK_V1_NETWORK_FINGERPRINT,
@@ -356,6 +398,7 @@ function GoogleMapCanvas({
         {layers.vehicles && frame ? frame.vehicles.map((vehicle) => (
           <AdvancedMarker key={vehicle.id} position={vehicle.position} title={`${vehicle.id}: ${vehicle.state}, ${vehicle.occupancy}/${vehicle.capacity} occupied`} clickable onClick={() => onSelect({ kind: "VEHICLE", id: vehicle.id })} zIndex={vehicle.failed ? 8 : 5}>
             <Pin
+              scale={0.78}
               background={vehicle.failed ? ROUTE_SEMANTIC_PALETTE.failedVehicle : frame.scenarioSlot === "A" ? ROUTE_SEMANTIC_PALETTE.scenarioA : ROUTE_SEMANTIC_PALETTE.scenarioB}
               borderColor="#091015"
               glyphColor="#091015"
@@ -398,46 +441,210 @@ function GoogleAuthBoundary({ children, onAuthFailure }: {
   return armed ? children : null;
 }
 
-function EntityInspector({ selected, frame, onSelect }: {
+function InspectorEmptyState({ frame, slot, hasHistoricalRun }: {
+  readonly frame: ReplayFrameProjection | null;
+  readonly slot: ScenarioSlot;
+  readonly hasHistoricalRun: boolean;
+}) {
+  const state = frame ? "FRAME_READY" : hasHistoricalRun ? "STALE" : "READY";
+  const status = frame
+    ? `SCENARIO ${frame.scenarioSlot} · ${frame.displayTime}`
+    : hasHistoricalRun
+      ? `SCENARIO ${slot} · EVIDENCE INVALIDATED`
+      : "INSPECTOR READY";
+  const title = frame
+    ? "Select a committed entity"
+    : hasHistoricalRun
+      ? "Current replay cleared"
+      : "No replay evidence available";
+  const description = frame
+    ? "Choose a vehicle or passenger to inspect this exact committed frame."
+    : hasHistoricalRun
+      ? `Run Scenario ${slot} again to inspect current evidence. Historical artifacts remain preserved.`
+      : "Configure and run a scenario to publish inspectable vehicle and passenger evidence.";
+
+  return (
+    <div className={styles.inspectorEmpty} data-state={state}>
+      <div className={styles.inspectorSignal} aria-hidden="true">
+        <Crosshair size={22} strokeWidth={1.45} />
+      </div>
+      <div className={styles.inspectorEmptyCopy}>
+        <span>{status}</span>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </div>
+      {!frame ? (
+        <ul className={styles.inspectorCapabilities} aria-label="Inspectable evidence">
+          <li>
+            <BusFront size={14} strokeWidth={1.6} aria-hidden="true" />
+            <span><strong>Vehicle telemetry</strong><small>State, occupancy and battery</small></span>
+          </li>
+          <li>
+            <UsersRound size={14} strokeWidth={1.6} aria-hidden="true" />
+            <span><strong>Passenger trace</strong><small>Assignment, origin and destination</small></span>
+          </li>
+          <li>
+            <Network size={14} strokeWidth={1.6} aria-hidden="true" />
+            <span><strong>Evidence provenance</strong><small>Current committed snapshot only</small></span>
+          </li>
+        </ul>
+      ) : null}
+      <div className={styles.inspectorSource}>
+        <span aria-hidden="true" />
+        {frame ? "Committed snapshot available" : hasHistoricalRun ? "Historical evidence preserved" : "Authored baseline active"}
+      </div>
+    </div>
+  );
+}
+
+function displayState(state: string): string {
+  return state.toLowerCase().replaceAll("_", " ");
+}
+
+function FrameStateBand({ label, total, states }: {
+  readonly label: string;
+  readonly total: number;
+  readonly states: readonly ReplayFrameStateCount[];
+}) {
+  const visibleStates = states.filter((state) => state.count > 0);
+  const accessibleSummary = visibleStates
+    .map((state) => `${displayState(state.state)} ${state.count}`)
+    .join(", ");
+  return (
+    <div className={styles.frameStateBand}>
+      <div className={styles.frameStateBandHeader}>
+        <span>{label}</span>
+        <strong>{total}</strong>
+      </div>
+      <div className={styles.frameStateSegments} role="img" aria-label={`${label}: ${accessibleSummary}`}>
+        {visibleStates.map((state) => (
+          <i
+            key={state.state}
+            data-state={state.state}
+            style={{ flexGrow: state.count }}
+            aria-hidden="true"
+          />
+        ))}
+      </div>
+      <div className={styles.frameStateCounts} aria-hidden="true">
+        {visibleStates.map((state) => (
+          <span key={state.state}><i data-state={state.state} />{displayState(state.state)} <b>{state.count}</b></span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FrameStateOverview({ frame, summary }: {
+  readonly frame: ReplayFrameProjection;
+  readonly summary: ReplayFrameStateSummary;
+}) {
+  return (
+    <section className={styles.frameOverview} aria-label={`Committed frame state at ${frame.displayTime}`} data-testid="frame-state-overview">
+      <header>
+        <div><span>FRAME STATE</span><strong>{frame.displayTime}</strong></div>
+        <small>Scenario {frame.scenarioSlot}</small>
+      </header>
+      <FrameStateBand label="Vehicles" total={summary.vehicleTotal} states={summary.vehicles} />
+      <FrameStateBand label="Passengers" total={summary.passengerTotal} states={summary.passengers} />
+      <footer>Snapshot distribution · presentation only</footer>
+    </section>
+  );
+}
+
+interface EntitySearchResult {
+  readonly kind: "VEHICLE" | "PASSENGER";
+  readonly id: string;
+  readonly state: string;
+}
+
+function EntityInspector({ selected, frame, slot, hasHistoricalRun, onSelect }: {
   readonly selected: SelectedEntity;
   readonly frame: ReplayFrameProjection | null;
+  readonly slot: ScenarioSlot;
+  readonly hasHistoricalRun: boolean;
   readonly onSelect: (entity: SelectedEntity) => void;
 }) {
+  const [query, setQuery] = useState("");
   let vehicle: ReplayVehicleProjection | undefined;
   let passenger: ReplayPassengerProjection | undefined;
   if (selected?.kind === "VEHICLE") vehicle = frame?.vehicles.find((candidate) => candidate.id === selected.id);
   else if (selected?.kind === "PASSENGER") passenger = frame?.passengers.find((candidate) => candidate.id === selected.id);
-  const inspectablePassengers = frame?.passengers.filter((candidate) => candidate.state !== "NOT_ARRIVED" && candidate.state !== "SERVED") ?? [];
-  const selectedValue = selected ? `${selected.kind}:${selected.id}` : "";
+  const frameSummary = useMemo(() => frame ? summarizeReplayFrame(frame) : null, [frame]);
+  const searchResults = useMemo<readonly EntitySearchResult[]>(() => {
+    const normalized = query.trim().toUpperCase();
+    if (!frame || normalized.length === 0) return Object.freeze([]);
+    const results: EntitySearchResult[] = [];
+    for (const candidate of frame.vehicles) {
+      if (candidate.id.toUpperCase().includes(normalized)) {
+        results.push(Object.freeze({ kind: "VEHICLE", id: candidate.id, state: candidate.state }));
+        if (results.length === ENTITY_RESULT_LIMIT) return Object.freeze(results);
+      }
+    }
+    for (const candidate of frame.passengers) {
+      if (candidate.id.toUpperCase().includes(normalized)) {
+        results.push(Object.freeze({ kind: "PASSENGER", id: candidate.id, state: candidate.state }));
+        if (results.length === ENTITY_RESULT_LIMIT) break;
+      }
+    }
+    return Object.freeze(results);
+  }, [frame, query]);
+
   return (
     <aside className={styles.inspector} aria-label="Selected replay entity">
       <span className={styles.kicker}>INSPECTOR</span>
+      {frame && frameSummary ? <FrameStateOverview frame={frame} summary={frameSummary} /> : null}
       {frame ? (
-        <label className={styles.inspectorPicker}>
-          <span>Committed entity</span>
-          <select
-            aria-label="Inspect committed entity"
-            value={selectedValue}
-            onChange={(event) => {
-              const [kind, id] = event.target.value.split(":", 2);
-              onSelect(kind === "VEHICLE" || kind === "PASSENGER" ? { kind, id } : null);
-            }}
-          >
-            <option value="">Choose an entity</option>
-            <optgroup label="Vehicles">
-              {frame.vehicles.map((candidate) => <option key={candidate.id} value={`VEHICLE:${candidate.id}`}>{candidate.id} · {candidate.state}</option>)}
-            </optgroup>
-            {inspectablePassengers.length > 0 ? (
-              <optgroup label="Active passengers">
-                {inspectablePassengers.map((candidate) => <option key={candidate.id} value={`PASSENGER:${candidate.id}`}>{candidate.id} · {candidate.state}</option>)}
-              </optgroup>
-            ) : null}
-          </select>
-        </label>
+        <div className={styles.entityFinder}>
+          <label htmlFor="replay-entity-search">Find entity</label>
+          <div className={styles.entitySearchField}>
+            <Search size={14} strokeWidth={1.7} aria-hidden="true" />
+            <input
+              id="replay-entity-search"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Vehicle or passenger ID"
+              aria-label="Find vehicle or passenger by ID"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          {query.trim() ? (
+            <div className={styles.entitySearchResults}>
+              <span className={styles.entityResultCount} aria-live="polite">
+                {searchResults.length > 0 ? `${searchResults.length} matches shown · maximum ${ENTITY_RESULT_LIMIT}` : "No current entity matches"}
+              </span>
+              {searchResults.length > 0 ? (
+                <ul>
+                  {searchResults.map((result) => (
+                    <li key={`${result.kind}:${result.id}`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelect({ kind: result.kind, id: result.id });
+                          setQuery("");
+                        }}
+                      >
+                        {result.kind === "VEHICLE"
+                          ? <BusFront size={13} strokeWidth={1.65} aria-hidden="true" />
+                          : <UsersRound size={13} strokeWidth={1.65} aria-hidden="true" />}
+                        <span><strong>{result.id}</strong><small>{displayState(result.state)}</small></span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
       {vehicle ? (
-        <>
-          <strong>{vehicle.id}</strong>
+        <section className={styles.entityDetail} aria-label={`Vehicle ${vehicle.id}`}>
+          <header>
+            <div><span>VEHICLE</span><strong>{vehicle.id}</strong></div>
+            <button type="button" onClick={() => onSelect(null)} aria-label={`Close vehicle ${vehicle.id}`}><X size={13} aria-hidden="true" /></button>
+          </header>
           <dl>
             <div><dt>State</dt><dd>{vehicle.state}</dd></div>
             <div><dt>Occupancy</dt><dd>{vehicle.occupancy} / {vehicle.capacity}</dd></div>
@@ -445,10 +652,13 @@ function EntityInspector({ selected, frame, onSelect }: {
             <div><dt>Reserve policy</dt><dd>{vehicle.minimumReserveBasisPoints} bp</dd></div>
             <div><dt>Network zone</dt><dd>{vehicle.currentZoneId}</dd></div>
           </dl>
-        </>
+        </section>
       ) : passenger ? (
-        <>
-          <strong>{passenger.id}</strong>
+        <section className={styles.entityDetail} aria-label={`Passenger ${passenger.id}`}>
+          <header>
+            <div><span>PASSENGER</span><strong>{passenger.id}</strong></div>
+            <button type="button" onClick={() => onSelect(null)} aria-label={`Close passenger ${passenger.id}`}><X size={13} aria-hidden="true" /></button>
+          </header>
           <dl>
             <div><dt>State</dt><dd>{passenger.state}</dd></div>
             <div><dt>Request</dt><dd>{passenger.requestSecond} s</dd></div>
@@ -456,16 +666,29 @@ function EntityInspector({ selected, frame, onSelect }: {
             <div><dt>Destination</dt><dd>{passenger.destinationZoneId}</dd></div>
             <div><dt>Vehicle</dt><dd>{passenger.assignedVehicleId ?? "Unassigned"}</dd></div>
           </dl>
-        </>
-      ) : <p>{frame ? "Select a vehicle or enable the passenger layer to inspect committed state." : "No committed replay. Configure and run a scenario to publish dynamic evidence."}</p>}
+        </section>
+      ) : (
+        <InspectorEmptyState frame={frame} slot={slot} hasHistoricalRun={hasHistoricalRun} />
+      )}
     </aside>
   );
 }
 
-function SemanticLegend() {
+function SemanticLegend({ id, onClose }: {
+  readonly id: string;
+  readonly onClose: () => void;
+}) {
   return (
-    <aside className={styles.routeLegend} aria-label="Route presentation legend">
-      <span className={styles.kicker}>ROUTE SEMANTICS</span>
+    <aside id={id} className={styles.routeLegend} aria-label="Route presentation legend">
+      <header className={styles.legendHeader}>
+        <div>
+          <span className={styles.kicker}>ROUTE SEMANTICS</span>
+          <small>Presentation key</small>
+        </div>
+        <button type="button" className={styles.legendClose} onClick={onClose} aria-label="Close route semantics">
+          <X size={14} aria-hidden="true" />
+        </button>
+      </header>
       <ul>
         <li><i className={styles.legendBaseline} />Baseline network</li>
         <li><i className={styles.legendA} />Scenario A active</li>
@@ -478,9 +701,21 @@ function SemanticLegend() {
   );
 }
 
-export function StressLabMap({ application, onReadinessChange }: {
+export function StressLabMap({
+  application,
+  onReadinessChange,
+  actions,
+  autoplayRequest = null,
+  onAutoplaySettled,
+}: {
   readonly application: StressLabApplicationState;
   readonly onReadinessChange?: (status: GoogleMapReadiness) => void;
+  readonly actions?: ReactNode;
+  readonly autoplayRequest?: ReplayAutoplayRequest | null;
+  readonly onAutoplaySettled?: (
+    request: ReplayAutoplayRequest,
+    outcome: ReplayAutoplayOutcome,
+  ) => void;
 }) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
   const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAP_ID ?? "";
@@ -498,7 +733,17 @@ export function StressLabMap({ application, onReadinessChange }: {
   const [routeSummary, setRouteSummary] = useState<RoutePresentationSummary>(AUTHORED_ROUTE_SUMMARY);
   const [routesReadiness, setRoutesReadiness] = useState<RoutesReadiness>(configurationPresent ? "ROUTES_LOADING" : "ROUTES_CONFIGURATION_REQUIRED");
   const [resetGeneration, setResetGeneration] = useState(0);
+  const [routeLegendOpen, setRouteLegendOpen] = useState(false);
   const priorModelIdentity = useRef<string | null>(null);
+  const lastPreparedAutoplayId = useRef<string | null>(null);
+  const activeAutoplayRequest = useRef<ReplayAutoplayRequest | null>(null);
+
+  const settleAutoplay = useCallback((outcome: ReplayAutoplayOutcome) => {
+    const request = activeAutoplayRequest.current;
+    if (!request) return;
+    activeAutoplayRequest.current = null;
+    onAutoplaySettled?.(request, outcome);
+  }, [onAutoplaySettled]);
 
   useEffect(() => {
     const identity = model?.runId ?? null;
@@ -508,6 +753,59 @@ export function StressLabMap({ application, onReadinessChange }: {
       setSelectedEntity(null);
     }
   }, [clock, model]);
+  useEffect(() => {
+    if (
+      !autoplayRequest ||
+      autoplayRequest.id === lastPreparedAutoplayId.current
+    ) {
+      return;
+    }
+    lastPreparedAutoplayId.current = autoplayRequest.id;
+    const target = models[autoplayRequest.slot];
+    if (!target || target.runId !== autoplayRequest.runId) {
+      activeAutoplayRequest.current = autoplayRequest;
+      settleAutoplay("RUN_UNAVAILABLE");
+      return;
+    }
+
+    let cancelled = false;
+    const frameRequest = requestAnimationFrame(() => {
+      if (cancelled) return;
+      activeAutoplayRequest.current = autoplayRequest;
+      priorModelIdentity.current = target.runId;
+      setSelectedSlot(autoplayRequest.slot);
+      clock.replaceFrames(target.frameCount, 0);
+      setSelectedEntity(null);
+      setResetGeneration((value) => value + 1);
+
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        settleAutoplay("REDUCED_MOTION");
+        return;
+      }
+      clock.play();
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frameRequest);
+    };
+  }, [autoplayRequest, clock, models, settleAutoplay]);
+  useEffect(() => {
+    const request = activeAutoplayRequest.current;
+    if (!request) return;
+    const target = models[request.slot];
+    if (!target || target.runId !== request.runId) {
+      settleAutoplay("RUN_UNAVAILABLE");
+      return;
+    }
+    if (
+      selectedSlot === request.slot &&
+      clockState.frameCount === target.frameCount &&
+      clockState.cursor === target.frameCount - 1 &&
+      !clockState.playing
+    ) {
+      settleAutoplay("COMPLETED");
+    }
+  }, [clockState, models, selectedSlot, settleAutoplay]);
   useEffect(() => () => clock.dispose(), [clock]);
   useEffect(() => onReadinessChange?.(readiness), [onReadinessChange, readiness]);
   useEffect(() => {
@@ -524,6 +822,9 @@ export function StressLabMap({ application, onReadinessChange }: {
   const authoredFrame = model && clockState.frameCount > 0 ? model.projectFrame(Math.min(clockState.cursor, model.frameCount - 1)) : null;
   const frame = authoredFrame ? projectFrameOntoPresentedRoutes(authoredFrame, routeSummary.routes) : null;
   const projectionError = modelA.error || modelB.error;
+  const hasHistoricalRun = Object.values(application.runs).some(
+    (run) => run.scenarioRevisionRef.slot === selectedSlot,
+  );
   const switchScenario = (slot: ScenarioSlot) => {
     const target = models[slot];
     if (!target || slot === selectedSlot) return;
@@ -556,21 +857,36 @@ export function StressLabMap({ application, onReadinessChange }: {
   }, []);
   const onRoutesUnavailable = useCallback(() => setRoutesReadiness("ROUTES_UNAVAILABLE"), []);
 
+  const replayReadiness = frame
+    ? `Scenario ${selectedSlot} committed replay`
+    : projectionError
+      ? "Replay unavailable"
+      : "No committed replay";
   const readinessMessage: Record<GoogleMapReadiness, string> = {
-    CONFIG_ERROR: "Google Maps configuration is unavailable. Deterministic evidence remains valid.",
-    LOADING: "Loading the Google presentation surface…",
-    READY: "Google Maps ready · authored evidence overlay",
-    LOAD_ERROR: "Google Maps could not load. Deterministic evidence remains valid.",
-    AUTH_ERROR: "Google Maps authorization was rejected. Deterministic evidence remains valid.",
+    CONFIG_ERROR: `Google Maps configuration is unavailable · ${replayReadiness}. Deterministic evidence remains valid.`,
+    LOADING: `Google Maps loading · ${replayReadiness}`,
+    READY: `Ready · ${replayReadiness}`,
+    LOAD_ERROR: `Google Maps could not load · ${replayReadiness}. Deterministic evidence remains valid.`,
+    AUTH_ERROR: `Google Maps authorization was rejected · ${replayReadiness}. Deterministic evidence remains valid.`,
   };
-  const routeReadinessMessage: Record<RoutesReadiness, string> = {
-    ROUTES_LOADING: "Google road geometry loading",
-    ROUTES_READY: "Google road geometry ready",
-    ROUTES_PARTIAL_FALLBACK: `Google road geometry · ${routeSummary.googleCount}/${routeSummary.routes.length} · ${routeSummary.fallbackCount} authored fallbacks`,
-    ROUTES_CONFIGURATION_REQUIRED: "Authored geometry fallback",
-    ROUTES_UNAVAILABLE: "Authored geometry fallback",
-    AUTHORED_FALLBACK: "Authored geometry fallback",
-  };
+  const showAuthoredFallback = shouldRenderAuthoredFallback(readiness);
+  const timelineDetails = useMemo(() => {
+    if (!model) return null;
+    const failureIndex = model.failureSecond === null
+      ? null
+      : nearestReplayFrameIndex(model.timestamps, model.failureSecond);
+    return Object.freeze({
+      start: model.projectFrame(0).displayTime,
+      end: model.projectFrame(model.frameCount - 1).displayTime,
+      failure: failureIndex === null ? null : model.projectFrame(failureIndex).displayTime,
+    });
+  }, [model]);
+  const replayProgress = model && model.frameCount > 1
+    ? (clockState.cursor / (model.frameCount - 1)) * 100
+    : 0;
+  const replayProgressStyle = {
+    "--replay-progress": `${replayProgress}%`,
+  } as CSSProperties;
   const timelineDisabled = !model || !frame;
 
   return (
@@ -581,12 +897,34 @@ export function StressLabMap({ application, onReadinessChange }: {
           <h2 id="map-title">Authored Sandton–Rosebank replay</h2>
           <p>Synthetic simulation · No live fleet control · Google Maps is presentation only</p>
         </div>
-        <div className={styles.scenarioSelector} aria-label="Replay scenario">
-          {(["A", "B"] as const).map((slot) => (
-            <button key={slot} type="button" className={slot === selectedSlot ? styles.selectedScenario : ""} aria-pressed={slot === selectedSlot} disabled={!models[slot]} onClick={() => switchScenario(slot)}>
-              Scenario {slot}
-            </button>
-          ))}
+        <div className={styles.headerControls}>
+          <div className={styles.bottomUtilityBar} aria-label="Map utilities">
+            {actions}
+            <span className={styles.utilityDivider} aria-hidden="true" />
+            <div className={styles.routeSemanticsControl}>
+              <button
+                type="button"
+                className={`${styles.routeSemanticsButton} ${routeLegendOpen ? styles.routeSemanticsButtonActive : ""}`}
+                onClick={() => setRouteLegendOpen((open) => !open)}
+                aria-label="Route semantics"
+                aria-expanded={routeLegendOpen}
+                aria-controls="route-semantics-panel"
+              >
+                <RouteIcon size={16} strokeWidth={1.7} aria-hidden="true" />
+              </button>
+              <span className={styles.utilityTooltip} aria-hidden="true">Route semantics</span>
+              {routeLegendOpen ? (
+                <SemanticLegend id="route-semantics-panel" onClose={() => setRouteLegendOpen(false)} />
+              ) : null}
+            </div>
+          </div>
+          <div className={styles.scenarioSelector} aria-label="Replay scenario">
+            {(["A", "B"] as const).map((slot) => (
+              <button key={slot} type="button" className={slot === selectedSlot ? styles.selectedScenario : ""} aria-pressed={slot === selectedSlot} disabled={!models[slot]} onClick={() => switchScenario(slot)}>
+                Scenario {slot}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -611,42 +949,70 @@ export function StressLabMap({ application, onReadinessChange }: {
             />
           </GoogleAuthBoundary>
         ) : null}
-        {readiness !== "READY" ? <AuthoredNetworkFallback network={BASELINE_NETWORK} model={model} frame={frame} layers={layers} selected={selectedEntity} /> : null}
-        <div className={`${styles.mapStatus} ${readiness === "AUTH_ERROR" || readiness === "LOAD_ERROR" || readiness === "CONFIG_ERROR" ? styles.mapStatusWarning : ""}`} role={readiness === "AUTH_ERROR" || readiness === "LOAD_ERROR" || readiness === "CONFIG_ERROR" ? "alert" : "status"}>
+        {showAuthoredFallback ? <AuthoredNetworkFallback network={BASELINE_NETWORK} model={model} frame={frame} layers={layers} selected={selectedEntity} /> : null}
+        <div className={`${styles.mapStatus} ${readiness === "AUTH_ERROR" || readiness === "LOAD_ERROR" || readiness === "CONFIG_ERROR" ? styles.mapStatusWarning : ""}`} role={readiness === "AUTH_ERROR" || readiness === "LOAD_ERROR" || readiness === "CONFIG_ERROR" ? "alert" : "status"} data-testid="map-readiness-status">
           <span aria-hidden="true" />{readinessMessage[readiness]}
         </div>
-        <div className={styles.routeStatus} role="status" data-google-route-count={routeSummary.googleCount} data-road-following-route-count={routeSummary.roadFollowingCount}>
-          {routeReadinessMessage[routesReadiness]}
-        </div>
-        {!frame ? <div className={styles.noReplay} role={projectionError ? "alert" : "status"}><strong>No committed replay</strong><span>{projectionError || "Configure and run a scenario to publish dynamic evidence."}</span></div> : null}
 
-        <fieldset className={styles.layerControls}>
-          <legend>Layers</legend>
-          {(Object.keys(DEFAULT_LAYERS) as LayerKey[]).map((layer) => (
-            <label key={layer}><input type="checkbox" checked={layers[layer]} disabled={!frame && layer !== "network"} onChange={(event) => setLayer(layer, event.currentTarget.checked)} />{layer}</label>
-          ))}
-        </fieldset>
-        <SemanticLegend />
-        <EntityInspector selected={selectedEntity} frame={frame} onSelect={setSelectedEntity} />
+        <section className={styles.rightDock} aria-label="Map layers and evidence inspection">
+          <fieldset className={styles.layerToolbar}>
+            <legend className={styles.visuallyHidden}>Map layers</legend>
+            <span className={styles.layerToolbarMark} aria-hidden="true">
+              <Layers size={15} strokeWidth={1.7} />
+            </span>
+            {LAYER_CONTROLS.map(({ key, label, icon: Icon }) => (
+              <label key={key} className={styles.layerToggle}>
+                <input
+                  type="checkbox"
+                  checked={layers[key]}
+                  disabled={!frame && key !== "network"}
+                  onChange={(event) => setLayer(key, event.currentTarget.checked)}
+                  aria-label={`${label} layer`}
+                />
+                <span className={styles.layerToggleIcon} aria-hidden="true">
+                  <Icon size={16} strokeWidth={1.7} />
+                </span>
+                <span className={styles.layerTooltip} aria-hidden="true">{label}</span>
+              </label>
+            ))}
+          </fieldset>
+          <EntityInspector
+            key={`${selectedSlot}:${model?.runId ?? "none"}`}
+            selected={selectedEntity}
+            frame={frame}
+            slot={selectedSlot}
+            hasHistoricalRun={hasHistoricalRun}
+            onSelect={setSelectedEntity}
+          />
+        </section>
 
-        <div className={styles.timeline} aria-disabled={timelineDisabled}>
+        <div className={styles.timeline} aria-disabled={timelineDisabled} data-playing={clockState.playing}>
           <div className={styles.timelineIdentity} aria-live="polite">
+            <span className={styles.timelineMode}><i aria-hidden="true" />{model ? `Scenario ${selectedSlot}` : "Replay standby"}</span>
             <strong>{frame?.displayTime ?? "—:—:—"}</strong>
-            <span>{model && frame ? `Frame ${frame.index + 1} / ${model.frameCount}` : "Replay unavailable"}</span>
+            <span className={styles.timelineFrame}>{model && frame ? `Frame ${frame.index + 1} of ${model.frameCount}` : "Replay unavailable"}</span>
             {frame?.failure ? <b>{frame.failure.vehicleId} · failure evidence active</b> : null}
           </div>
           <div className={styles.transportControls}>
-            <button type="button" onClick={() => clock.restart()} disabled={timelineDisabled || clockState.cursor === 0}>Restart</button>
-            <button type="button" onClick={() => clock.previous()} disabled={timelineDisabled || clockState.cursor === 0} aria-label="Previous committed frame">←</button>
-            {clockState.playing ? <button type="button" onClick={() => clock.pause()} disabled={timelineDisabled}>Pause</button> : <button type="button" onClick={() => clock.play()} disabled={timelineDisabled || clockState.cursor === (model?.frameCount ?? 1) - 1}>Play</button>}
-            <button type="button" onClick={() => clock.next()} disabled={timelineDisabled || clockState.cursor === (model?.frameCount ?? 1) - 1} aria-label="Next committed frame">→</button>
-            <button type="button" onClick={() => {
+            <button type="button" className={styles.restartButton} onClick={() => clock.restart()} disabled={timelineDisabled || clockState.cursor === 0}><RotateCcw size={13} aria-hidden="true" /><span>Restart</span></button>
+            <button type="button" className={styles.transportIconButton} onClick={() => clock.previous()} disabled={timelineDisabled || clockState.cursor === 0} aria-label="Previous committed frame"><StepBack size={14} aria-hidden="true" /></button>
+            {clockState.playing ? <button type="button" className={styles.playButton} onClick={() => clock.pause()} disabled={timelineDisabled}><Pause size={13} fill="currentColor" aria-hidden="true" /><span>Pause</span></button> : <button type="button" className={styles.playButton} onClick={() => clock.play()} disabled={timelineDisabled || clockState.cursor === (model?.frameCount ?? 1) - 1}><Play size={13} fill="currentColor" aria-hidden="true" /><span>Play</span></button>}
+            <button type="button" className={styles.transportIconButton} onClick={() => clock.next()} disabled={timelineDisabled || clockState.cursor === (model?.frameCount ?? 1) - 1} aria-label="Next committed frame"><StepForward size={14} aria-hidden="true" /></button>
+            <button type="button" className={styles.failureButton} onClick={() => {
               if (model?.failureSecond !== null && model?.failureSecond !== undefined) clock.seek(nearestReplayFrameIndex(model.timestamps, model.failureSecond));
-            }} disabled={timelineDisabled || model?.failureSecond === null}>Jump to failure</button>
+            }} disabled={timelineDisabled || model?.failureSecond === null}><TriangleAlert size={13} aria-hidden="true" /><span>Jump to failure</span></button>
           </div>
           <label className={styles.scrubber}>
-            <span>Exact committed snapshot</span>
-            <input type="range" min={0} max={Math.max(0, (model?.frameCount ?? 1) - 1)} step={1} value={timelineDisabled ? 0 : clockState.cursor} disabled={timelineDisabled} onChange={(event) => clock.seek(Number(event.currentTarget.value))} aria-valuetext={frame && model ? `${frame.displayTime}, frame ${frame.index + 1} of ${model.frameCount}` : "No committed replay"} />
+            <span className={styles.scrubberHeader}>
+              <span>Exact committed snapshot</span>
+              <output>{model && frame ? `${frame.index + 1} / ${model.frameCount}` : "Unavailable"}</output>
+            </span>
+            <input id="replay-scrubber" style={replayProgressStyle} type="range" min={0} max={Math.max(0, (model?.frameCount ?? 1) - 1)} step={1} value={timelineDisabled ? 0 : clockState.cursor} disabled={timelineDisabled} onChange={(event) => clock.seek(Number(event.currentTarget.value))} aria-valuetext={frame && model ? `${frame.displayTime}, frame ${frame.index + 1} of ${model.frameCount}` : "No committed replay"} />
+            <span className={styles.scrubberScale} aria-hidden="true">
+              <span>{timelineDetails?.start ?? "Start"}</span>
+              <span className={styles.failureTick}>{timelineDetails?.failure ? `Failure ${timelineDetails.failure}` : "No failure event"}</span>
+              <span>{timelineDetails?.end ?? "End"}</span>
+            </span>
           </label>
           <label className={styles.speedControl}>
             <span>Replay speed</span>
@@ -654,11 +1020,12 @@ export function StressLabMap({ application, onReadinessChange }: {
               <option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option>
             </select>
           </label>
-          <button type="button" className={styles.cameraButton} onClick={() => setResetGeneration((value) => value + 1)}>Reset camera</button>
+          <button type="button" className={styles.cameraButton} onClick={() => setResetGeneration((value) => value + 1)}><Crosshair size={13} aria-hidden="true" /><span>Reset camera</span></button>
         </div>
       </div>
 
       <footer className={styles.provenance}>
+        <span>SYNTHETIC SIMULATION · NO LIVE FLEET CONTROL</span>
         <span>Authored deterministic network overlay</span>
         <code>NETWORK {BASELINE_NETWORK.networkFingerprint.slice(0, 24)}…</code>
         {model ? <><code>INPUT {model.inputFingerprint.slice(0, 24)}…</code><code>LEDGER {model.eventLedgerFingerprint.slice(0, 24)}…</code><code>RESULT {model.resultFingerprint.slice(0, 24)}…</code></> : null}

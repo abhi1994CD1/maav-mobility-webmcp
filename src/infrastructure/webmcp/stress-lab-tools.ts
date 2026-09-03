@@ -103,8 +103,10 @@ export interface StressLabToolDependencies {
 
 const DISCLOSURE = "SYNTHETIC SIMULATION • NO LIVE FLEET CONTROL";
 
-function signalFrom(options: WebMCP.ToolExecuteCallbackOptions): AbortSignal {
-  return options.signal;
+function signalFrom(
+  options?: WebMCP.ToolExecuteCallbackOptions,
+): AbortSignal {
+  return options?.signal ?? new AbortController().signal;
 }
 
 function summaryForInput(
@@ -544,12 +546,13 @@ function executeTool<Input, Result extends StressLabWebMcpResult>(
   toolName: StressLabWebMcpToolName,
   schema: z.ZodType<Input>,
   input: Record<string, unknown>,
-  options: WebMCP.ToolExecuteCallbackOptions,
+  options: WebMCP.ToolExecuteCallbackOptions | undefined,
   invoke: (parsed: Input, signal: AbortSignal) => Promise<Result>,
 ): Promise<StressLabWebMcpResult> {
   const activityId = safeBegin(dependencies.activity, toolName, input);
   const operationId = boundedOperationId(input);
-  if (options.signal.aborted) {
+  const signal = signalFrom(options);
+  if (signal.aborted) {
     const result = cancelled(
       operationId,
       dependencies.readObservedView().revision,
@@ -566,7 +569,7 @@ function executeTool<Input, Result extends StressLabWebMcpResult>(
   safeAdvance(dependencies.activity, activityId, "RUNNING");
   const perform = async (): Promise<StressLabWebMcpResult> => {
     try {
-      return await invoke(parsed.data, signalFrom(options));
+      return await invoke(parsed.data, signal);
     } catch (error) {
       return mapApplicationError(
         error,
@@ -604,7 +607,7 @@ function readTool(dependencies: StressLabToolDependencies): WebMCP.ModelContextT
     name: "read_lab_state",
     title: "Read MAAV Stress Lab state",
     description:
-      "Inspect the current synthetic scenarios and authoritative artifact readiness without changing application state.",
+      "Read compact authoritative Stress Lab state without mutation. Reading one current RUN by objectId focuses and starts its visible committed replay; this changes presentation only.",
     inputSchema: stressLabReadJsonSchema,
     annotations: { readOnlyHint: true, untrustedContentHint: true },
     execute: (input, options) =>
@@ -630,7 +633,7 @@ function configureTool(
     name: "configure_scenario",
     title: "Configure a Stress Lab scenario",
     description:
-      "Create a revision-safe Scenario A or B configuration through the shared application authority.",
+      "Configure seed-07 Scenario A or B. For golden setup use mode REPLACE and exact labels: A \"Twelve compact pods\"; B \"Ten higher-capacity pods\"; never add suffixes. A is 12x8; B is 10x10. Shared: 70 kWh, 82% start, 20% reserve, 0.21 kWh/km, 30 s dwell; weights sandton 30, parkmore 15, illovo 20, rosebank 25, melrose-arch 10; wait 180 s, unserved 12, recovery 600 s, standing false; all five objectives. PATCH preserves an existing disruption. Never infer patch values from vague assent; ask first.",
     inputSchema: stressLabConfigureJsonSchema,
     annotations: { readOnlyHint: false, untrustedContentHint: true },
     execute: (input, options) =>
@@ -702,7 +705,7 @@ function injectTool(
     name: "inject_disruption",
     title: "Inject an equivalent vehicle failure",
     description:
-      "Mutate one explicit current scenario with the deterministic vehicle-failure rule. If the user did not choose A or B, ask before calling. Both requires two sequential calls with distinct operation IDs and the latest revision.",
+      "Mutate one explicit current scenario with the deterministic vehicle-failure rule. Copy the required constant type, target kind, and rule exactly; do not invent alternatives. atSecond is seconds after 08:30; use 720 for 08:42. If the user did not choose A or B, ask before calling. Both requires two sequential calls with distinct operation IDs and the latest revision.",
     inputSchema: stressLabInjectJsonSchema,
     annotations: { readOnlyHint: false, untrustedContentHint: false },
     execute: (input, options) =>
@@ -765,7 +768,7 @@ function stageFindingTool(
     name: "stage_finding",
     title: "Stage a bounded finding",
     description:
-      "Stage deterministic evidence from the current comparison for visible human review; never approve it.",
+      "Stage deterministic evidence from the current comparison for visible human review; never approve it. Use only an outcome and emphasis explicitly requested by the user; vague assent is not authority to choose either.",
     inputSchema: stressLabStageFindingJsonSchema,
     annotations: { readOnlyHint: false, untrustedContentHint: false },
     execute: (input, options) =>

@@ -2,13 +2,11 @@
 
 ## Status and ownership
 
-This document owns target system boundaries, dependency direction, artifact
-flow, state ownership, adapter responsibilities, and atomic command behavior.
-Gates 3–5 implement deterministic inputs, verified simulations, trusted
-comparisons, and deterministic finding candidates. Gate 6 implements the
-headless application authority. Gate 7 exposes it through six static WebMCP
-adapters and pulls forward only the Gate 8.1 tab-scoped Zustand repository and
-runtime composition required to mount that accepted service in a browser.
+This document owns system boundaries, dependency direction, artifact flow,
+state ownership, adapter responsibilities, and atomic command behavior. The H0
+runtime includes deterministic inputs and simulation, trusted comparisons and
+findings, shared application authority, six static WebMCP adapters, the manual
+operator workbench, and read-only deterministic map replay.
 
 ## Architectural style
 

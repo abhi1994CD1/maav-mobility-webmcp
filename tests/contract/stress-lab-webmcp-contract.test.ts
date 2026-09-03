@@ -8,6 +8,7 @@ import {
 import { StaticStressLabBridgeCoordinator } from "@/infrastructure/webmcp/stress-lab-bridge-runtime";
 import {
   stressLabCompareInputSchema,
+  stressLabConfigureJsonSchema,
   stressLabConfigureInputSchema,
   stressLabInjectInputSchema,
   stressLabInjectJsonSchema,
@@ -110,6 +111,21 @@ async function execute(
   return result;
 }
 
+async function executeWithoutOptions(
+  definitions: readonly WebMCP.ModelContextTool[],
+  name: string,
+  input: Record<string, unknown>,
+): Promise<StressLabWebMcpResult> {
+  const tool = definitions.find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`Missing tool ${name}`);
+  const chromeExecute = tool.execute as unknown as (
+    inputObject: Record<string, unknown>,
+  ) => WebMCP.MaybePromise<unknown>;
+  const result = (await chromeExecute(input)) as StressLabWebMcpResult;
+  expect(JSON.stringify(result).length).toBeLessThanOrEqual(1_500);
+  return result;
+}
+
 function expectSuccess(result: StressLabWebMcpResult) {
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error.code);
@@ -126,11 +142,13 @@ function expectMutationSuccess(result: StressLabWebMcpResult) {
   return success;
 }
 
-async function expectVisibleRevision(
+async function expectVisibleRevisionWithoutOptions(
   definitions: readonly WebMCP.ModelContextTool[],
   revision: number,
 ) {
-  const read = expectSuccess(await execute(definitions, "read_lab_state", {}));
+  const read = expectSuccess(
+    await executeWithoutOptions(definitions, "read_lab_state", {}),
+  );
   expect(read.stateRevision).toBe(revision);
 }
 
@@ -140,6 +158,92 @@ afterEach(() => {
 });
 
 describe("Gate 7 strict static contracts", () => {
+  it("supports the actual Chrome one-argument callback shape safely", async () => {
+    const runtime = createStressLabRuntime();
+    const definitions = tools(runtime);
+
+    const summary = expectSuccess(
+      await executeWithoutOptions(definitions, "read_lab_state", {}),
+    );
+    const scoped = expectSuccess(
+      await executeWithoutOptions(definitions, "read_lab_state", {
+        scope: "SUMMARY",
+      }),
+    );
+    expect(summary.stateRevision).toBe(0);
+    expect(scoped.stateRevision).toBe(0);
+
+    const invalid = await executeWithoutOptions(definitions, "read_lab_state", {
+      scope: "UNKNOWN",
+    });
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_ARGUMENTS" },
+    });
+    expect(runtime.readObservedView().revision).toBe(0);
+    expect(runtime.readObservedView().audit).toEqual([]);
+
+    const readActivities = runtime.store.getState().ui.activities.filter(
+      (entry) => entry.toolName === "read_lab_state",
+    );
+    expect(readActivities).toHaveLength(3);
+    const committedActivities = readActivities.filter(
+      (activity) => activity.transitions.at(-1)?.status === "COMMITTED",
+    );
+    const failedActivities = readActivities.filter(
+      (activity) => activity.transitions.at(-1)?.status === "FAILED",
+    );
+    expect(committedActivities).toHaveLength(2);
+    expect(failedActivities).toHaveLength(1);
+    for (const activity of committedActivities) {
+      expect(activity.transitions.map((entry) => entry.status)).toEqual([
+        "RECEIVED",
+        "VALIDATED",
+        "RUNNING",
+        "COMMITTED",
+      ]);
+    }
+    expect(failedActivities[0]?.transitions.map((entry) => entry.status)).toEqual([
+      "RECEIVED",
+      "FAILED",
+    ]);
+    expect(
+      readActivities.every((activity) =>
+        ["COMMITTED", "FAILED", "CANCELLED"].includes(
+          activity.transitions.at(-1)?.status ?? "",
+        ),
+      ),
+    ).toBe(true);
+    runtime.dispose();
+  });
+
+  it("contains unexpected one-argument callback failures", async () => {
+    const runtime = createStressLabRuntime();
+    const definitions = tools(runtime);
+    vi.spyOn(runtime.service, "readLabState").mockImplementationOnce(() => {
+      throw new Error("SECRET_CALLBACK_FAILURE /Users/private/stack");
+    });
+
+    const result = await executeWithoutOptions(
+      definitions,
+      "read_lab_state",
+      {},
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "INTERNAL_ERROR" },
+    });
+    expect(JSON.stringify(result)).not.toMatch(
+      /SECRET_CALLBACK_FAILURE|Users\/private|stack/u,
+    );
+    expect(
+      runtime.store.getState().ui.activities[0]?.transitions.map(
+        (entry) => entry.status,
+      ),
+    ).toEqual(["RECEIVED", "VALIDATED", "RUNNING", "FAILED"]);
+    runtime.dispose();
+  });
+
   it("publishes exactly six stable tools with the approved annotations", () => {
     const runtime = createStressLabRuntime();
     const definitions = tools(runtime);
@@ -170,12 +274,212 @@ describe("Gate 7 strict static contracts", () => {
       .toMatchObject({ readOnlyHint: true, untrustedContentHint: true });
     expect(definitions.find((tool) => tool.name === "configure_scenario")?.annotations)
       .toMatchObject({ readOnlyHint: false, untrustedContentHint: true });
+    const read = definitions.find((tool) => tool.name === "read_lab_state");
+    expect(read?.description).toContain("current RUN by objectId");
+    expect(read?.description).toContain("presentation only");
     const inject = definitions.find((tool) => tool.name === "inject_disruption");
+    expect(inject?.description).toContain(
+      "Copy the required constant type, target kind, and rule exactly",
+    );
+    expect(inject?.description).toContain("atSecond is seconds after 08:30; use 720 for 08:42");
     expect(inject?.description).toContain("If the user did not choose A or B, ask before calling.");
     expect(inject?.description).toContain("Both requires two sequential calls");
     expect(inject?.description).toContain("distinct operation IDs and the latest revision");
     expect(JSON.stringify(inject?.inputSchema)).not.toMatch(/"VEHICLE_ID"/u);
     expect(inject?.description).not.toMatch(/vehicle ID|VEHICLE_ID/u);
+    const stage = definitions.find((tool) => tool.name === "stage_finding");
+    expect(stage?.description).toContain("explicitly requested by the user");
+    expect(stage?.description).toContain("vague assent is not authority");
+    expect(JSON.stringify(stage?.inputSchema)).toContain(
+      "never infer it from vague assent",
+    );
+    runtime.dispose();
+  });
+
+  it("publishes a closed-world, agent-readable seed-07 configuration schema", () => {
+    const runtime = createStressLabRuntime();
+    const definitions = tools(runtime);
+    const configure = definitions.find(
+      (definition) => definition.name === "configure_scenario",
+    );
+    const replacement = stressLabConfigureJsonSchema.oneOf[0];
+    const fleet = replacement.properties.configuration.properties.fleet;
+    const weights = fleet.properties.initialZoneWeights;
+
+    expect(configure?.description).toContain(
+      "A is 12x8; B is 10x10",
+    );
+    expect(configure?.description).toContain("use mode REPLACE and exact labels");
+    expect(configure?.description).toContain("never add suffixes");
+    expect(configure?.description).toContain(
+      "weights sandton 30, parkmore 15, illovo 20, rosebank 25, melrose-arch 10",
+    );
+    expect(configure?.description).toContain("all five objectives");
+    expect(configure?.description).toContain("PATCH preserves an existing disruption");
+    expect(configure?.description).toContain("Never infer patch values from vague assent");
+    expect(replacement.properties.configuration.properties.label).toMatchObject({
+      description: expect.stringContaining("do not add slot suffixes"),
+      examples: ["Twelve compact pods", "Ten higher-capacity pods"],
+    });
+    expect(Object.keys(weights.properties)).toEqual([
+      "sandton",
+      "parkmore",
+      "illovo",
+      "rosebank",
+      "melrose-arch",
+    ]);
+    expect(weights.required).toEqual([
+      "sandton",
+      "parkmore",
+      "illovo",
+      "rosebank",
+      "melrose-arch",
+    ]);
+    expect(weights.additionalProperties).toBe(false);
+    expect(weights.description).toContain("total exactly 100");
+    expect(weights.properties).toMatchObject({
+      sandton: { default: 30 },
+      parkmore: { default: 15 },
+      illovo: { default: 20 },
+      rosebank: { default: 25 },
+      "melrose-arch": { default: 10 },
+    });
+    expect(fleet.properties.vehicleCount.examples).toEqual([12, 10]);
+    expect(fleet.properties.seatsPerVehicle.examples).toEqual([8, 10]);
+    expect(fleet.properties.batteryCapacityKWh.default).toBe(70);
+    expect(
+      replacement.properties.configuration.properties.constraints.properties,
+    ).toMatchObject({
+      maximumWaitSeconds: { default: 180 },
+      maximumUnservedPassengers: { default: 12 },
+      minimumBatteryReservePercent: { default: 20 },
+      maximumRecoverySeconds: { default: 600 },
+      standingAllowed: { const: false },
+    });
+    expect(JSON.stringify(configure?.inputSchema)).not.toMatch(/zone1|zone2|zone3/u);
+    expect(stressLabStageFindingInputSchema.safeParse({
+      operationId: "explicit-stage",
+      expectedRevision: 1,
+      comparisonId: "comparison-1",
+      selectedOutcome: "TRADE_OFF",
+      emphasis: "BALANCED",
+    }).success).toBe(true);
+    runtime.dispose();
+  });
+
+  it("accepts both golden configurations and rejects authored-zone drift", () => {
+    const command = (slot: "A" | "B", weights: Record<string, number>) => ({
+      operationId: `configure-${slot.toLowerCase()}`,
+      expectedRevision: slot === "A" ? 0 : 1,
+      slot,
+      mode: "REPLACE" as const,
+      configuration: {
+        ...configuration(slot),
+        fleet: {
+          ...configuration(slot).fleet,
+          initialZoneWeights: weights,
+        },
+      },
+    });
+    const goldenWeights = { ...configuration("A").fleet.initialZoneWeights };
+
+    expect(
+      stressLabConfigureInputSchema.safeParse(
+        command("A", { ...goldenWeights }),
+      ).success,
+    ).toBe(true);
+    expect(
+      stressLabConfigureInputSchema.safeParse(
+        command("B", { ...goldenWeights }),
+      ).success,
+    ).toBe(true);
+
+    const invalidWeights = [
+      { ...goldenWeights, zone1: 1, sandton: 29 },
+      {
+        sandton: 40,
+        parkmore: 15,
+        illovo: 20,
+        rosebank: 25,
+      },
+      { ...goldenWeights, sandton: 29 },
+      { ...goldenWeights, sandton: 31 },
+      { ...goldenWeights, sandton: 29.5, "melrose-arch": 10.5 },
+    ];
+    for (const weights of invalidWeights) {
+      expect(
+        stressLabConfigureInputSchema.safeParse(command("A", weights)).success,
+      ).toBe(false);
+    }
+
+    const totalIssue = stressLabConfigureInputSchema.safeParse(
+      command("A", { ...goldenWeights, sandton: 29 }),
+    );
+    expect(totalIssue.success).toBe(false);
+    if (totalIssue.success) throw new Error("Expected total-99 weights to fail.");
+    expect(totalIssue.error.issues.map((issue) => issue.message)).toContain(
+      "The five authored zone weights must total exactly 100.",
+    );
+
+    expect(
+      stressLabConfigureInputSchema.safeParse({
+        operationId: "patch-zone-weights",
+        expectedRevision: 1,
+        slot: "A",
+        mode: "PATCH",
+        configuration: {
+          fleet: { initialZoneWeights: { sandton: 100 } },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects invalid authored-zone maps before service authority or mutation", async () => {
+    const runtime = createStressLabRuntime();
+    const definitions = tools(runtime);
+    const serviceSpy = vi.spyOn(
+      runtime.service,
+      "configureScenarioConfiguration",
+    );
+    const before = runtime.repository.getState();
+    const golden = configuration("A");
+    const invalidWeights = [
+      { ...golden.fleet.initialZoneWeights, zone1: 1, sandton: 29 },
+      { ...golden.fleet.initialZoneWeights, sandton: 29 },
+      { ...golden.fleet.initialZoneWeights, sandton: 31 },
+    ];
+
+    for (const [index, initialZoneWeights] of invalidWeights.entries()) {
+      const result = await executeWithoutOptions(
+        definitions,
+        "configure_scenario",
+        {
+          operationId: `invalid-zone-map-${index}`,
+          expectedRevision: 0,
+          slot: "A",
+          mode: "REPLACE",
+          configuration: {
+            ...golden,
+            fleet: { ...golden.fleet, initialZoneWeights },
+          },
+        },
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "INVALID_ARGUMENTS" },
+      });
+    }
+
+    expect(serviceSpy).not.toHaveBeenCalled();
+    expect(runtime.repository.getState()).toBe(before);
+    expect(runtime.readObservedView().revision).toBe(0);
+    expect(runtime.readObservedView().audit).toEqual([]);
+    for (const activity of runtime.store.getState().ui.activities) {
+      expect(activity.transitions.map((transition) => transition.status)).toEqual([
+        "RECEIVED",
+        "FAILED",
+      ]);
+    }
     runtime.dispose();
   });
 
@@ -370,6 +674,14 @@ describe("Gate 7 strict static contracts", () => {
     }).success).toBe(false);
     expect(stressLabInjectJsonSchema.required).toContain("scenarioRevisionId");
     expect(stressLabInjectJsonSchema.properties.disruption.required).toContain("target");
+    expect(stressLabInjectJsonSchema.properties.disruption.properties.atSecond).toEqual({
+      type: "integer",
+      description: "Seconds after 08:30; use 720 for 08:42. Must be a 30-second increment.",
+      default: 720,
+      minimum: 0,
+      maximum: 1_799,
+      multipleOf: 30,
+    });
     expect(stressLabInjectJsonSchema.properties.disruption.properties.target).toEqual({
       type: "object",
       properties: {
@@ -380,6 +692,57 @@ describe("Gate 7 strict static contracts", () => {
       additionalProperties: false,
     });
     expect(JSON.stringify(stressLabInjectJsonSchema)).not.toMatch(/"VEHICLE_ID"/u);
+  });
+
+  it("rejects clock-minute 522 with actionable 08:42 guidance before service authority", async () => {
+    const runtime = createStressLabRuntime();
+    const definitions = tools(runtime);
+    const spy = vi.spyOn(runtime.service, "injectPublicDisruption");
+    const before = runtime.repository.getState();
+    const input = {
+      operationId: "invalid-clock-minute",
+      expectedRevision: 0,
+      scenarioRevisionId: "scenario-A-r1",
+      disruption: {
+        type: "VEHICLE_FAILURE",
+        target: {
+          kind: "DETERMINISTIC_RULE",
+          rule: "HIGHEST_OCCUPANCY_THEN_VEHICLE_ID",
+        },
+        atSecond: 522,
+      },
+    };
+
+    const parsed = stressLabInjectInputSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected clock-minute disruption input to fail.");
+    expect(parsed.error.issues).toContainEqual(expect.objectContaining({
+      path: ["disruption", "atSecond"],
+      message: "Use seconds after 08:30 in 30-second increments; 08:42 is atSecond 720.",
+    }));
+
+    const result = await executeWithoutOptions(definitions, "inject_disruption", input);
+    expect(result).toMatchObject({
+      ok: false,
+      operationId: "invalid-clock-minute",
+      error: {
+        code: "INVALID_ARGUMENTS",
+        field: "disruption.atSecond",
+        message: expect.stringContaining("08:42 is atSecond 720"),
+      },
+    });
+    expect(spy).not.toHaveBeenCalled();
+    expect(runtime.repository.getState()).toBe(before);
+    expect(runtime.readObservedView().revision).toBe(0);
+    expect(runtime.readObservedView().audit).toEqual([]);
+    const activity = runtime.store.getState().ui.activities.find(
+      (entry) => entry.operationId === "invalid-clock-minute",
+    );
+    expect(activity?.transitions.map((transition) => transition.status)).toEqual([
+      "RECEIVED",
+      "FAILED",
+    ]);
+    runtime.dispose();
   });
 
   it("rejects malformed, legacy-target, and compound inputs before service authority", async () => {
@@ -565,32 +928,32 @@ describe("Gate 7 authoritative adapter", () => {
     runtime.dispose();
   });
 
-  it("completes the real golden flow and preserves every accepted fingerprint", async () => {
+  it("completes the real golden flow with one-argument callbacks and preserves every accepted fingerprint", async () => {
     const runtime = createStressLabRuntime();
     const definitions = tools(runtime);
-    const initial = expectSuccess(await execute(definitions, "read_lab_state", {}));
+    const initial = expectSuccess(await executeWithoutOptions(definitions, "read_lab_state", {}));
     expect(initial).not.toHaveProperty("operationId");
     expect(initial).not.toHaveProperty("artifactId");
 
-    const configureA = expectMutationSuccess(await execute(definitions, "configure_scenario", {
+    const configureA = expectMutationSuccess(await executeWithoutOptions(definitions, "configure_scenario", {
       operationId: "web-configure-a",
       expectedRevision: initial.stateRevision,
       slot: "A",
       mode: "REPLACE",
       configuration: configuration("A"),
     }));
-    await expectVisibleRevision(definitions, configureA.stateRevision);
-    const configureB = expectMutationSuccess(await execute(definitions, "configure_scenario", {
+    await expectVisibleRevisionWithoutOptions(definitions, configureA.stateRevision);
+    const configureB = expectMutationSuccess(await executeWithoutOptions(definitions, "configure_scenario", {
       operationId: "web-configure-b",
       expectedRevision: configureA.stateRevision,
       slot: "B",
       mode: "REPLACE",
       configuration: configuration("B"),
     }));
-    await expectVisibleRevision(definitions, configureB.stateRevision);
+    await expectVisibleRevisionWithoutOptions(definitions, configureB.stateRevision);
 
     const injectSpy = vi.spyOn(runtime.service, "injectPublicDisruption");
-    const injectA = expectMutationSuccess(await execute(definitions, "inject_disruption", {
+    const injectA = expectMutationSuccess(await executeWithoutOptions(definitions, "inject_disruption", {
       operationId: "web-inject-a",
       expectedRevision: configureB.stateRevision,
       scenarioRevisionId: configureA.artifactId,
@@ -600,8 +963,8 @@ describe("Gate 7 authoritative adapter", () => {
         atSecond: 720,
       },
     }));
-    await expectVisibleRevision(definitions, injectA.stateRevision);
-    const injectB = expectMutationSuccess(await execute(definitions, "inject_disruption", {
+    await expectVisibleRevisionWithoutOptions(definitions, injectA.stateRevision);
+    const injectB = expectMutationSuccess(await executeWithoutOptions(definitions, "inject_disruption", {
       operationId: "web-inject-b",
       expectedRevision: injectA.stateRevision,
       scenarioRevisionId: configureB.artifactId,
@@ -611,7 +974,7 @@ describe("Gate 7 authoritative adapter", () => {
         atSecond: 720,
       },
     }));
-    await expectVisibleRevision(definitions, injectB.stateRevision);
+    await expectVisibleRevisionWithoutOptions(definitions, injectB.stateRevision);
     expect(injectA.summary).toMatchObject({ invalidatedArtifactIds: [] });
     expect(injectB.summary).toMatchObject({ invalidatedArtifactIds: [] });
     expect(injectA.operationId).not.toBe(injectB.operationId);
@@ -625,12 +988,12 @@ describe("Gate 7 authoritative adapter", () => {
       expect(command.disruption.target).not.toHaveProperty("vehicleId");
     }
 
-    const runA = expectMutationSuccess(await execute(definitions, "run_scenario", {
+    const runA = expectMutationSuccess(await executeWithoutOptions(definitions, "run_scenario", {
       operationId: "web-run-a",
       expectedRevision: injectB.stateRevision,
       scenarioRevisionId: injectA.artifactId,
     }));
-    await expectVisibleRevision(definitions, runA.stateRevision);
+    await expectVisibleRevisionWithoutOptions(definitions, runA.stateRevision);
     expect(runA.summary).toMatchObject({
       inputFingerprint: GOLDEN.inputA,
       eventLedgerFingerprint: GOLDEN.ledgerA,
@@ -644,42 +1007,42 @@ describe("Gate 7 authoritative adapter", () => {
     expect(JSON.stringify(injectSpy.mock.calls[0]?.[0])).not.toContain(
       failedVehicleEventA?.facts.vehicleId,
     );
-    const runB = expectMutationSuccess(await execute(definitions, "run_scenario", {
+    const runB = expectMutationSuccess(await executeWithoutOptions(definitions, "run_scenario", {
       operationId: "web-run-b",
       expectedRevision: runA.stateRevision,
       scenarioRevisionId: injectB.artifactId,
     }));
-    await expectVisibleRevision(definitions, runB.stateRevision);
+    await expectVisibleRevisionWithoutOptions(definitions, runB.stateRevision);
     expect(runB.summary).toMatchObject({
       inputFingerprint: GOLDEN.inputB,
       eventLedgerFingerprint: GOLDEN.ledgerB,
       resultFingerprint: GOLDEN.resultB,
     });
 
-    const comparison = expectMutationSuccess(await execute(definitions, "compare_scenarios", {
+    const comparison = expectMutationSuccess(await executeWithoutOptions(definitions, "compare_scenarios", {
       operationId: "web-compare",
       expectedRevision: runB.stateRevision,
       runAId: runA.artifactId,
       runBId: runB.artifactId,
     }));
-    await expectVisibleRevision(definitions, comparison.stateRevision);
+    await expectVisibleRevisionWithoutOptions(definitions, comparison.stateRevision);
     expect(comparison.summary).toEqual({ comparisonFingerprint: GOLDEN.comparison });
 
-    const finding = expectMutationSuccess(await execute(definitions, "stage_finding", {
+    const finding = expectMutationSuccess(await executeWithoutOptions(definitions, "stage_finding", {
       operationId: "web-stage",
       expectedRevision: comparison.stateRevision,
       comparisonId: comparison.artifactId,
       selectedOutcome: "TRADE_OFF",
       emphasis: "BALANCED",
     }));
-    await expectVisibleRevision(definitions, finding.stateRevision);
+    await expectVisibleRevisionWithoutOptions(definitions, finding.stateRevision);
     expect(finding.summary).toMatchObject({
       comparisonFingerprint: GOLDEN.comparison,
       findingFingerprint: GOLDEN.finding,
       review: "PENDING_REVIEW",
     });
     const pendingState = runtime.repository.getState();
-    const exactRetry = await execute(definitions, "stage_finding", {
+    const exactRetry = await executeWithoutOptions(definitions, "stage_finding", {
       operationId: "web-stage",
       expectedRevision: comparison.stateRevision,
       comparisonId: comparison.artifactId,
@@ -687,7 +1050,7 @@ describe("Gate 7 authoritative adapter", () => {
       emphasis: "BALANCED",
     });
     expect(exactRetry).toEqual(finding);
-    const replacement = await execute(definitions, "stage_finding", {
+    const replacement = await executeWithoutOptions(definitions, "stage_finding", {
       operationId: "web-stage-replacement",
       expectedRevision: finding.stateRevision,
       comparisonId: comparison.artifactId,

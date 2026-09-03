@@ -75,6 +75,58 @@ export interface ReplayFrameProjection {
   readonly failure: ReplayFailureProjection | null;
 }
 
+export interface ReplayFrameStateCount {
+  readonly state: VehicleState["state"] | PassengerState["state"];
+  readonly count: number;
+}
+
+export interface ReplayFrameStateSummary {
+  readonly vehicles: readonly ReplayFrameStateCount[];
+  readonly passengers: readonly ReplayFrameStateCount[];
+  readonly vehicleTotal: number;
+  readonly passengerTotal: number;
+}
+
+const VEHICLE_STATE_ORDER: readonly VehicleState["state"][] = Object.freeze([
+  "IDLE",
+  "TRAVELLING_EMPTY",
+  "DWELLING",
+  "TRAVELLING_SERVICE",
+  "FAILED",
+]);
+
+const PASSENGER_STATE_ORDER: readonly PassengerState["state"][] = Object.freeze([
+  "NOT_ARRIVED",
+  "WAITING",
+  "RESERVED",
+  "ONBOARD",
+  "RECOVERY_WAIT",
+  "SERVED",
+]);
+
+export function summarizeReplayFrame(frame: ReplayFrameProjection): ReplayFrameStateSummary {
+  const vehicleCounts = new Map<VehicleState["state"], number>();
+  const passengerCounts = new Map<PassengerState["state"], number>();
+  for (const vehicle of frame.vehicles) {
+    vehicleCounts.set(vehicle.state, (vehicleCounts.get(vehicle.state) ?? 0) + 1);
+  }
+  for (const passenger of frame.passengers) {
+    passengerCounts.set(passenger.state, (passengerCounts.get(passenger.state) ?? 0) + 1);
+  }
+  return Object.freeze({
+    vehicles: Object.freeze(VEHICLE_STATE_ORDER.map((state) => Object.freeze({
+      state,
+      count: vehicleCounts.get(state) ?? 0,
+    }))),
+    passengers: Object.freeze(PASSENGER_STATE_ORDER.map((state) => Object.freeze({
+      state,
+      count: passengerCounts.get(state) ?? 0,
+    }))),
+    vehicleTotal: frame.vehicles.length,
+    passengerTotal: frame.passengers.length,
+  });
+}
+
 export interface ReplayModel {
   readonly runId: string;
   readonly scenarioSlot: ScenarioSlot;

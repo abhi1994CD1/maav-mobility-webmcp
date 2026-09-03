@@ -197,7 +197,9 @@ test("six static tools complete the trusted browser workflow", async ({ page }) 
     summary: { review: "PENDING_REVIEW" },
   });
 
+  await page.getByRole("button", { name: "Open Finding review" }).click();
   await expect(page.getByText("PENDING HUMAN REVIEW")).toBeVisible();
+  await page.getByRole("button", { name: "Open Authority activity" }).click();
   await expect(page.getByText("stage finding", { exact: true })).toBeVisible();
 });
 
@@ -205,20 +207,30 @@ test("complete manual golden workflow shares the authoritative browser runtime",
   test.setTimeout(90_000);
   await installModelContextMock(page);
   await page.goto("/lab");
-  await page.getByRole("button", { name: "Reset lab" }).click();
-  await expect(page.getByRole("dialog", { name: "Reset the Stress Lab?" })).toBeVisible();
-  await page.getByRole("button", { name: "Confirm reset" }).click();
+  await page.getByRole("button", { name: "Reset" }).click();
+  await expect(page.getByRole("dialog", { name: "Load the default lab?" })).toBeVisible();
+  await page.getByRole("button", { name: "Load default lab" }).click();
 
+  await page.getByRole("button", { name: "Open Scenario A configuration" }).click();
   await page.getByRole("button", { name: "Configure A" }).click();
+  await page.getByRole("button", { name: "Open Scenario B configuration" }).click();
   await page.getByRole("button", { name: "Configure B" }).click();
-  await page.getByRole("button", { name: "Inject 08:42 failure" }).nth(0).click();
-  await page.getByRole("button", { name: "Inject 08:42 failure" }).nth(1).click();
+  await page.getByRole("button", { name: "Open Scenario A configuration" }).click();
+  await page.getByRole("button", { name: "Inject 08:42 failure" }).click();
+  await page.getByRole("button", { name: "Open Scenario B configuration" }).click();
+  await page.getByRole("button", { name: "Inject 08:42 failure" }).click();
+  await page.getByRole("button", { name: "Open Scenario A configuration" }).click();
   await page.getByRole("button", { name: "Run scenario A" }).click();
+  await page.getByRole("button", { name: "Open Scenario A evidence" }).click();
   await expect(page.getByText("1,050 s", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open Scenario B configuration" }).click();
   await page.getByRole("button", { name: "Run scenario B" }).click();
+  await page.getByRole("button", { name: "Open Scenario B evidence" }).click();
   await expect(page.getByText("780 s", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open Trusted comparison" }).click();
   await page.getByRole("button", { name: "Compare current runs" }).click();
   await page.getByRole("button", { name: "Stage trade-off finding" }).click();
+  await page.getByRole("button", { name: "Open Finding review" }).click();
   await expect(page.getByText("PENDING HUMAN REVIEW")).toBeVisible();
   await expect(page.getByText("TRADE_OFF", { exact: true })).toBeVisible();
   await expect(page.getByText("BALANCED", { exact: true })).toBeVisible();
@@ -235,6 +247,7 @@ test("unsupported WebMCP remains an honest manual-first fallback", async ({ page
   await expect(page.getByText("Manual mode")).toBeVisible();
   await expect(page.getByText("SYNTHETIC SIMULATION")).toBeVisible();
   await expect(page.getByText("NO LIVE FLEET CONTROL")).toBeVisible();
+  await page.getByRole("button", { name: "Open Authority activity" }).click();
   await expect(page.getByText("No operation activity")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Reset lab" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Reset" })).toBeEnabled();
 });

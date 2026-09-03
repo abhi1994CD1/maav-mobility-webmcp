@@ -1,5 +1,6 @@
 "use client";
 
+import { Play, Settings2, Square, TriangleAlert } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import type { ScenarioSlot, VerifiedRunResultArtifact } from "@/domain/stress-lab/types";
 import {
@@ -7,6 +8,7 @@ import {
   type ScenarioPresentation,
   validateScenarioDraft,
 } from "@/state/stress-lab-hooks";
+import type { ScenarioVisualAction } from "./webmcp-visual-orchestration";
 import styles from "./stress-lab.module.css";
 
 interface ScenarioPanelProps {
@@ -20,6 +22,7 @@ interface ScenarioPanelProps {
   readonly differenceSummary: string;
   readonly busy: boolean;
   readonly runActive: boolean;
+  readonly highlightedWebMcpAction?: ScenarioVisualAction;
   readonly onConfigure: (draft: ScenarioDraft) => void;
   readonly onInject: () => void;
   readonly onRun: () => void;
@@ -35,17 +38,42 @@ interface FieldDefinition {
   readonly step: number;
 }
 
-const FIELDS: readonly FieldDefinition[] = Object.freeze([
-  { key: "vehicleCount", label: "Fleet size", unit: "vehicles", min: 0, max: 30, step: 1 },
-  { key: "seatsPerVehicle", label: "Seats", unit: "per vehicle", min: 1, max: 20, step: 1 },
-  { key: "batteryCapacityKWh", label: "Battery", unit: "kWh", min: 0.001, max: 1_000_000, step: 0.001 },
-  { key: "startingBatteryPercent", label: "Starting charge", unit: "%", min: 0, max: 100, step: 0.01 },
-  { key: "minimumReservePercent", label: "Reserve floor", unit: "%", min: 0, max: 100, step: 0.01 },
-  { key: "energyKWhPerKm", label: "Energy rate", unit: "kWh/km", min: 0.001, max: 100, step: 0.001 },
-  { key: "dwellSeconds", label: "Dwell", unit: "seconds", min: 0, max: 86_400, step: 1 },
-  { key: "maximumWaitSeconds", label: "Maximum wait", unit: "seconds", min: 0, max: 86_400, step: 1 },
-  { key: "maximumUnservedPassengers", label: "Maximum unserved", unit: "passengers", min: 0, max: 1_000_000, step: 1 },
-  { key: "maximumRecoverySeconds", label: "Maximum recovery", unit: "seconds", min: 0, max: 86_400, step: 1 },
+interface FieldGroup {
+  readonly title: string;
+  readonly fields: readonly FieldDefinition[];
+}
+
+const FIELD_GROUPS: readonly FieldGroup[] = Object.freeze([
+  {
+    title: "Fleet",
+    fields: [
+      { key: "vehicleCount", label: "Fleet size", unit: "vehicles", min: 0, max: 30, step: 1 },
+      { key: "seatsPerVehicle", label: "Seats", unit: "per vehicle", min: 1, max: 20, step: 1 },
+    ],
+  },
+  {
+    title: "Energy",
+    fields: [
+      { key: "batteryCapacityKWh", label: "Battery", unit: "kWh", min: 0.001, max: 1_000_000, step: 0.001 },
+      { key: "startingBatteryPercent", label: "Starting charge", unit: "%", min: 0, max: 100, step: 0.01 },
+      { key: "minimumReservePercent", label: "Reserve floor", unit: "%", min: 0, max: 100, step: 0.01 },
+      { key: "energyKWhPerKm", label: "Energy rate", unit: "kWh/km", min: 0.001, max: 100, step: 0.001 },
+    ],
+  },
+  {
+    title: "Service constraints",
+    fields: [
+      { key: "dwellSeconds", label: "Dwell", unit: "seconds", min: 0, max: 86_400, step: 1 },
+      { key: "maximumWaitSeconds", label: "Maximum wait", unit: "seconds", min: 0, max: 86_400, step: 1 },
+      { key: "maximumUnservedPassengers", label: "Maximum unserved", unit: "passengers", min: 0, max: 1_000_000, step: 1 },
+    ],
+  },
+  {
+    title: "Recovery",
+    fields: [
+      { key: "maximumRecoverySeconds", label: "Maximum recovery", unit: "seconds", min: 0, max: 86_400, step: 1 },
+    ],
+  },
 ]);
 
 export function ScenarioPanel({
@@ -55,6 +83,7 @@ export function ScenarioPanel({
   differenceSummary,
   busy,
   runActive,
+  highlightedWebMcpAction,
   onConfigure,
   onInject,
   onRun,
@@ -129,68 +158,91 @@ export function ScenarioPanel({
             </div>
           ) : null}
 
-          <div className={styles.fieldGrid}>
-            {FIELDS.map((field) => {
-              const error = errors[field.key];
-              const fieldId = `scenario-${slot}-${field.key}`;
-              return (
-                <label className={styles.field} key={field.key} htmlFor={fieldId}>
-                  <span>{field.label}</span>
-                  <div className={styles.inputShell}>
-                    <input
-                      id={fieldId}
-                      name={field.key}
-                      type="number"
-                      min={field.min}
-                      max={field.max}
-                      step={field.step}
-                      value={draft[field.key]}
-                      aria-invalid={Boolean(error)}
-                      aria-describedby={`${fieldId}-unit${error ? ` ${fieldId}-error` : ""}`}
-                      onChange={(event) => {
-                        const value = event.currentTarget.valueAsNumber;
-                        setDraft({ ...draft, [field.key]: value });
-                      }}
-                    />
-                    <small id={`${fieldId}-unit`}>{field.unit}</small>
-                  </div>
-                  {error ? <em id={`${fieldId}-error`}>{error}</em> : null}
-                </label>
-              );
-            })}
+          <div className={styles.fieldGroups}>
+            {FIELD_GROUPS.map((group) => (
+              <fieldset className={styles.fieldGroup} key={group.title}>
+                <legend>{group.title}</legend>
+                <div className={styles.fieldGrid}>
+                  {group.fields.map((field) => {
+                    const error = errors[field.key];
+                    const fieldId = `scenario-${slot}-${field.key}`;
+                    return (
+                      <label className={styles.field} key={field.key} htmlFor={fieldId}>
+                        <span>{field.label}</span>
+                        <div className={styles.inputShell}>
+                          <input
+                            id={fieldId}
+                            name={field.key}
+                            type="number"
+                            min={field.min}
+                            max={field.max}
+                            step={field.step}
+                            value={draft[field.key]}
+                            aria-invalid={Boolean(error)}
+                            aria-describedby={`${fieldId}-unit${error ? ` ${fieldId}-error` : ""}`}
+                            onChange={(event) => {
+                              const value = event.currentTarget.valueAsNumber;
+                              setDraft({ ...draft, [field.key]: value });
+                            }}
+                          />
+                          <small id={`${fieldId}-unit`}>{field.unit}</small>
+                        </div>
+                        {error ? <em id={`${fieldId}-error`}>{error}</em> : null}
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            ))}
           </div>
 
           <div className={styles.scenarioActions}>
             <button
-              className={styles.secondaryButton}
+              className={`${styles.secondaryButton} ${highlightedWebMcpAction === "configure" ? styles.webMcpActionActive : ""}`}
               type="submit"
               disabled={busy || errorEntries.length > 0}
               aria-describedby={`scenario-${slot}-configure-help`}
+              data-scenario-slot={slot}
+              data-webmcp-action="configure"
             >
-              Configure {slot}
+              <Settings2 size={14} aria-hidden="true" />
+              <span>Configure {slot}</span>
             </button>
             <button
-              className={styles.warningButton}
+              className={`${styles.warningButton} ${highlightedWebMcpAction === "inject" ? styles.webMcpActionActive : ""}`}
               type="button"
               disabled={!canInject}
               onClick={onInject}
               aria-describedby={`scenario-${slot}-inject-help`}
+              data-scenario-slot={slot}
+              data-webmcp-action="inject"
             >
-              Inject 08:42 failure
+              <TriangleAlert size={14} aria-hidden="true" />
+              <span>Inject 08:42 failure</span>
             </button>
             {runActive ? (
-              <button className={styles.dangerButton} type="button" onClick={onCancel}>
-                Cancel run
+              <button
+                className={`${styles.dangerButton} ${highlightedWebMcpAction === "run" ? styles.webMcpActionActive : ""}`}
+                type="button"
+                onClick={onCancel}
+                data-scenario-slot={slot}
+                data-webmcp-action="run"
+              >
+                <Square size={13} fill="currentColor" aria-hidden="true" />
+                <span>Cancel run</span>
               </button>
             ) : (
               <button
-                className={styles.primaryButton}
+                className={`${styles.primaryButton} ${highlightedWebMcpAction === "run" ? styles.webMcpActionActive : ""}`}
                 type="button"
                 disabled={!canRun}
                 onClick={onRun}
                 aria-describedby={`scenario-${slot}-run-help`}
+                data-scenario-slot={slot}
+                data-webmcp-action="run"
               >
-                Run scenario {slot}
+                <Play size={14} fill="currentColor" aria-hidden="true" />
+                <span>Run scenario {slot}</span>
               </button>
             )}
           </div>

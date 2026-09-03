@@ -30,12 +30,28 @@ const objectiveSchema = z.enum([
   "FASTER_RECOVERY",
   "LOWER_EMPTY_KM",
 ]);
+const h0ZoneIds = [
+  "sandton",
+  "parkmore",
+  "illovo",
+  "rosebank",
+  "melrose-arch",
+] as const;
+const zoneWeightSchema = z.number().int().min(1).max(1_000_000);
 const zoneWeightsSchema = z
-  .record(stableIdSchema, z.number().int().min(1).max(1_000_000))
-  .refine((weights) => Object.keys(weights).length > 0)
+  .strictObject({
+    sandton: zoneWeightSchema,
+    parkmore: zoneWeightSchema,
+    illovo: zoneWeightSchema,
+    rosebank: zoneWeightSchema,
+    "melrose-arch": zoneWeightSchema,
+  })
   .refine(
     (weights) =>
       Object.values(weights).reduce((sum, weight) => sum + weight, 0) === 100,
+    {
+      message: "The five authored zone weights must total exactly 100.",
+    },
   );
 const fleetSchema = z.strictObject({
   vehicleCount: z.number().int().min(0).max(30),
@@ -147,7 +163,9 @@ const atSecondSchema = z
   .int()
   .min(0)
   .max(1_799)
-  .refine((value) => value % 30 === 0);
+  .refine((value) => value % 30 === 0, {
+    message: "Use seconds after 08:30 in 30-second increments; 08:42 is atSecond 720.",
+  });
 export const stressLabInjectInputSchema = z.strictObject({
   operationId: stableIdSchema,
   expectedRevision: revisionSchema,
@@ -240,6 +258,14 @@ const revisionJson = {
 } as const;
 const objectivesJson = {
   type: "array",
+  description: "H0 uses all five listed objectives for both scenarios.",
+  default: [
+    "LOWER_WAIT",
+    "LOWER_ENERGY_PER_PASSENGER_KM",
+    "HIGHER_UTILIZATION",
+    "FASTER_RECOVERY",
+    "LOWER_EMPTY_KM",
+  ],
   minItems: 1,
   maxItems: 5,
   uniqueItems: true,
@@ -254,32 +280,126 @@ const objectivesJson = {
     ],
   },
 } as const;
+const zoneWeightJson = {
+  type: "integer",
+  minimum: 1,
+  maximum: 1_000_000,
+} as const;
+const zoneWeightProperties = {
+  sandton: { ...zoneWeightJson, description: "H0 weight 30.", default: 30 },
+  parkmore: { ...zoneWeightJson, description: "H0 weight 15.", default: 15 },
+  illovo: { ...zoneWeightJson, description: "H0 weight 20.", default: 20 },
+  rosebank: { ...zoneWeightJson, description: "H0 weight 25.", default: 25 },
+  "melrose-arch": {
+    ...zoneWeightJson,
+    description: "H0 weight 10.",
+    default: 10,
+  },
+} as const;
 const fleetProperties = {
-  vehicleCount: { type: "integer", minimum: 0, maximum: 30 },
-  seatsPerVehicle: { type: "integer", minimum: 1, maximum: 20 },
-  batteryCapacityKWh: { type: "number", exclusiveMinimum: 0, maximum: 1_000_000 },
-  startingBatteryPercent: { type: "number", minimum: 0, maximum: 100 },
-  minimumReservePercent: { type: "number", minimum: 0, maximum: 100 },
-  energyKWhPerKm: { type: "number", exclusiveMinimum: 0, maximum: 100 },
-  dwellSeconds: { type: "integer", minimum: 0, maximum: 86_400, multipleOf: 30 },
+  vehicleCount: {
+    type: "integer",
+    description: "H0 Scenario A uses 12; Scenario B uses 10.",
+    examples: [12, 10],
+    minimum: 0,
+    maximum: 30,
+  },
+  seatsPerVehicle: {
+    type: "integer",
+    description: "H0 Scenario A uses 8; Scenario B uses 10.",
+    examples: [8, 10],
+    minimum: 1,
+    maximum: 20,
+  },
+  batteryCapacityKWh: {
+    type: "number",
+    description: "H0 value is 70 kWh.",
+    default: 70,
+    exclusiveMinimum: 0,
+    maximum: 1_000_000,
+  },
+  startingBatteryPercent: {
+    type: "number",
+    description: "H0 value is 82 percent.",
+    default: 82,
+    minimum: 0,
+    maximum: 100,
+  },
+  minimumReservePercent: {
+    type: "number",
+    description: "H0 value is 20 and must equal the constraint reserve.",
+    default: 20,
+    minimum: 0,
+    maximum: 100,
+  },
+  energyKWhPerKm: {
+    type: "number",
+    description: "H0 value is 0.21 kWh per kilometre.",
+    default: 0.21,
+    exclusiveMinimum: 0,
+    maximum: 100,
+  },
+  dwellSeconds: {
+    type: "integer",
+    description: "H0 value is 30 seconds; must be a multiple of 30.",
+    default: 30,
+    minimum: 0,
+    maximum: 86_400,
+    multipleOf: 30,
+  },
   initialZoneWeights: {
     type: "object",
-    minProperties: 1,
-    propertyNames: { pattern: stableIdPattern },
-    additionalProperties: { type: "integer", minimum: 1, maximum: 1_000_000 },
+    description: "All five authored H0 zones are required; positive integer weights must total exactly 100.",
+    properties: zoneWeightProperties,
+    required: h0ZoneIds,
+    additionalProperties: false,
   },
 } as const;
 const constraintProperties = {
-  maximumWaitSeconds: { type: "integer", minimum: 0, maximum: 86_400 },
-  maximumUnservedPassengers: { type: "integer", minimum: 0, maximum: 1_000_000 },
-  minimumBatteryReservePercent: { type: "number", minimum: 0, maximum: 100 },
-  maximumRecoverySeconds: { type: "integer", minimum: 0, maximum: 86_400 },
-  standingAllowed: { const: false },
+  maximumWaitSeconds: {
+    type: "integer",
+    description: "H0 value is 180 seconds.",
+    default: 180,
+    minimum: 0,
+    maximum: 86_400,
+  },
+  maximumUnservedPassengers: {
+    type: "integer",
+    description: "H0 value is 12 passengers.",
+    default: 12,
+    minimum: 0,
+    maximum: 1_000_000,
+  },
+  minimumBatteryReservePercent: {
+    type: "number",
+    description: "H0 value is 20 and must equal the fleet reserve.",
+    default: 20,
+    minimum: 0,
+    maximum: 100,
+  },
+  maximumRecoverySeconds: {
+    type: "integer",
+    description: "H0 value is 600 seconds.",
+    default: 600,
+    minimum: 0,
+    maximum: 86_400,
+  },
+  standingAllowed: {
+    const: false,
+    description: "Standing is always prohibited in H0.",
+  },
 } as const;
 const fullConfiguration = {
   type: "object",
+  description: "Complete H0 configuration. A is 12 by 8; B is 10 by 10. Use the documented shared assumptions.",
   properties: {
-    label: { type: "string", minLength: 1, maxLength: 48 },
+    label: {
+      type: "string",
+      description: "For seed-07 use exactly Twelve compact pods for A or Ten higher-capacity pods for B; do not add slot suffixes.",
+      examples: ["Twelve compact pods", "Ten higher-capacity pods"],
+      minLength: 1,
+      maxLength: 48,
+    },
     fleet: {
       type: "object",
       properties: fleetProperties,
@@ -299,9 +419,15 @@ const fullConfiguration = {
 } as const;
 const patchConfiguration = {
   type: "object",
+  description: "Patch mutable fields only. A supplied zone-weight map must contain all five authored zones.",
   minProperties: 1,
   properties: {
-    label: { type: "string", minLength: 1, maxLength: 48 },
+    label: {
+      type: "string",
+      description: "New label text; omit unless the user explicitly requested it.",
+      minLength: 1,
+      maxLength: 48,
+    },
     fleet: {
       type: "object",
       minProperties: 1,
@@ -334,15 +460,16 @@ export const stressLabReadJsonSchema = {
 const configureProperties = {
   operationId: { ...idJson, description: "Retry-safe command identifier." },
   expectedRevision: { ...revisionJson, description: "Current application revision." },
-  slot: { type: "string", enum: ["A", "B"] },
+  slot: { type: "string", description: "Scenario slot to configure.", enum: ["A", "B"] },
 } as const;
 export const stressLabConfigureJsonSchema = {
   oneOf: [
     {
       type: "object",
+      description: "Replace one scenario with a complete configuration.",
       properties: {
         ...configureProperties,
-        mode: { const: "REPLACE" },
+        mode: { const: "REPLACE", description: "Provide every configuration field." },
         configuration: fullConfiguration,
       },
       required: ["operationId", "expectedRevision", "slot", "mode", "configuration"],
@@ -350,9 +477,10 @@ export const stressLabConfigureJsonSchema = {
     },
     {
       type: "object",
+      description: "Patch at least one supported mutable field on a configured scenario.",
       properties: {
         ...configureProperties,
-        mode: { const: "PATCH" },
+        mode: { const: "PATCH", description: "Provide only fields that should change." },
         configuration: patchConfiguration,
       },
       required: ["operationId", "expectedRevision", "slot", "mode", "configuration"],
@@ -393,7 +521,14 @@ export const stressLabInjectJsonSchema = {
           required: ["kind", "rule"],
           additionalProperties: false,
         },
-        atSecond: { type: "integer", minimum: 0, maximum: 1_799, multipleOf: 30 },
+        atSecond: {
+          type: "integer",
+          description: "Seconds after 08:30; use 720 for 08:42. Must be a 30-second increment.",
+          default: 720,
+          minimum: 0,
+          maximum: 1_799,
+          multipleOf: 30,
+        },
       },
       required: ["type", "target", "atSecond"],
       additionalProperties: false,
@@ -419,8 +554,16 @@ export const stressLabStageFindingJsonSchema = {
     operationId: { ...idJson, description: "Retry-safe command identifier." },
     expectedRevision: { ...revisionJson, description: "Current application revision." },
     comparisonId: { ...idJson, description: "Current trusted comparison ID." },
-    selectedOutcome: { type: "string", enum: ["A", "B", "TRADE_OFF", "INCONCLUSIVE"] },
-    emphasis: { type: "string", enum: ["BALANCED", "SERVICE", "ENERGY", "RESILIENCE"] },
+    selectedOutcome: {
+      type: "string",
+      description: "Finding outcome explicitly requested by the user; never infer it from vague assent.",
+      enum: ["A", "B", "TRADE_OFF", "INCONCLUSIVE"],
+    },
+    emphasis: {
+      type: "string",
+      description: "Finding emphasis explicitly requested by the user.",
+      enum: ["BALANCED", "SERVICE", "ENERGY", "RESILIENCE"],
+    },
   },
   required: ["operationId", "expectedRevision", "comparisonId", "selectedOutcome", "emphasis"],
   additionalProperties: false,

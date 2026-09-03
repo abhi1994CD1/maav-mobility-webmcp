@@ -1,161 +1,188 @@
+<div align="center">
+
+<img src="public/brand/neo-lab-logo.png" alt="NEO / LAB" width="440" />
+
 # MAAV Stress Lab
 
-> **Design it. Break it. Make it resilient.**
+### Design it. Break it. Make it resilient.
 
-MAAV Stress Lab is a browser-native, deterministic counterfactual mobility
-assurance lab for the WebMCP Challenge. It is designed to help a human and a
-browser agent ask a controlled question: how do two synthetic fleet designs
-behave under the same passenger demand and equivalent vehicle failure?
+A browser-native, deterministic mobility assurance lab where humans and browser agents<br />
+design two synthetic fleets, apply equivalent stress, compare immutable evidence, and keep the final decision human.
 
-The product is not a fleet-management dashboard, operational dispatcher, live
-digital twin, or scientifically calibrated transport model. It is a synthetic
-decision-support experiment workbench whose evidence is reproducible and whose
-final finding remains human-reviewed.
+[![WebMCP](https://img.shields.io/badge/WebMCP-6%20trusted%20tools-22d3ee?style=for-the-badge&labelColor=071015)](docs/WEBMCP_TOOLS.md)
+[![Tests](https://img.shields.io/badge/tests-278%20passing-6ee7b7?style=for-the-badge&labelColor=071015)](#verification)
+[![Next.js](https://img.shields.io/badge/Next.js-16.3.3-f8fafc?style=for-the-badge&logo=nextdotjs&logoColor=white&labelColor=071015)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-818cf8?style=for-the-badge&logo=typescript&logoColor=white&labelColor=071015)](https://www.typescriptlang.org/)
+[![License](https://img.shields.io/badge/license-MIT-a78bfa?style=for-the-badge&labelColor=071015)](LICENSE)
 
-## Migration status
+**Synthetic simulation · No live fleet control · Human-reviewed findings**
 
-This branch currently contains the approved **Gate 1 documentation contract**.
-The Stress Lab simulator, route, UI, six tools, and tests are not implemented
-yet. Until later gates pass, the existing application runtime remains the
-superseded Recovery Command Center baseline and must not be presented as Stress
-Lab evidence.
+</div>
 
-Gate 2 will first prove a two-tool static WebMCP spike in the real target browser
-before the deterministic engine is built.
+![MAAV Stress Lab showing the authored Sandton–Rosebank replay at the deterministic 08:42 vehicle failure](artifacts/gate9-correction/scenario-a-road-geometry-1440x900.jpg)
 
-## The problem
+## The product
 
-Mobility design discussions often rely on dashboards, opaque assumptions, or
-agent prose that cannot be reproduced. MAAV Stress Lab instead makes the
-experiment itself the product:
+Mobility design decisions are often buried in disconnected dashboards, opaque assumptions, or AI prose that cannot be reproduced. MAAV Stress Lab makes the experiment itself inspectable:
 
 ```text
-controlled scenario revisions
-  -> immutable simulation runs
-  -> compatible comparison evidence
-  -> evidence-linked finding
-  -> visible human review
+scenario revision
+  → deterministic run
+  → immutable evidence
+  → compatible comparison
+  → evidence-linked finding
+  → visible human review
 ```
 
-The agent can operate the lab, but it cannot create evidence, Accept its own
-finding, dispatch a vehicle, or turn a synthetic result into a real-world
-action.
+A human or compatible browser agent can configure Scenario A and Scenario B, apply the same documented failure policy, run both against one shared passenger trace, compare trusted artifacts, and stage a finding. The agent can operate the lab. It cannot manufacture evidence or approve its own conclusion.
 
-## H0 golden experiment
+> MAAV Stress Lab is a synthetic decision-support experiment workbench. It is not a live fleet dashboard, operational dispatcher, autonomous optimizer, digital twin, or scientifically calibrated transport model.
 
-The submission scope is one bounded experiment:
+## The golden experiment
 
-| Field | H0 value |
-|---|---|
-| Network | Versioned synthetic Sandton–Rosebank corridor |
-| Demand | 120 synthetic passenger requests |
-| Window | 08:30–09:00 |
-| Tick | 30 simulated seconds |
-| Seed | `07` |
-| Scenario A | 12 vehicles × 8 seats |
-| Scenario B | 10 vehicles × 10 seats |
-| Maximum wait | 3 minutes |
-| Minimum battery reserve | 20% |
-| Stress event | Equivalent vehicle failure at 08:42 |
+One deliberately bounded experiment makes the demo fast, repeatable, and auditable.
 
-Each scenario independently fails its active vehicle with the highest onboard
-occupancy. Ties use reserved-passenger count, active-service state, then
-ascending vehicle ID. The rule is fixed before execution; the vehicle is not
-randomly or theatrically selected.
+| Contract | Scenario A | Scenario B |
+|---|---:|---:|
+| Fleet | 12 vehicles × 8 seats | 10 vehicles × 10 seats |
+| Network | `sandton-rosebank-v1` | `sandton-rosebank-v1` |
+| Demand | 120 synthetic requests · seed `07` | 120 synthetic requests · seed `07` |
+| Window | 08:30–09:00 · 30-second tick | 08:30–09:00 · 30-second tick |
+| Stress | 08:42 deterministic vehicle failure | 08:42 deterministic vehicle failure |
+| Resolved vehicle | `A-09` | `B-03` |
 
-The planned engine derives service, capacity, wait, distance, energy, battery,
-constraint, and recovery outcomes from an immutable event ledger. No final KPI
-or preferred scenario is prewritten. Golden KPI values will be published only
-after the engine exists and reproducibility gates pass.
+At 08:42, each run independently selects the active vehicle with the highest onboard occupancy. Ties are resolved by reserved-passenger count, active-service state, then ascending vehicle ID. The rule is fixed before execution; the selected vehicle is never random or manually chosen for effect.
 
-## Why this is not another fleet dashboard
+### Reproducible outcome
 
-A dashboard primarily reports current operations. Stress Lab creates and tests
-counterfactual evidence:
+| Evidence | Scenario A | Scenario B |
+|---|---:|---:|
+| Served at horizon | 82 | 81 |
+| In service at horizon | 29 | 28 |
+| Unserved | 9 | 11 |
+| Maximum wait | 1,050 s | 780 s |
+| Total energy | 37,799 Wh | 31,665 Wh |
+| Minimum reserve | 7,633 bp | 7,648 bp |
+| Recovery time | 120 s | 450 s |
+| Standing observed | 0 | 0 |
+| Maximum-wait constraint | **FAIL** | **FAIL** |
 
-- immutable A/B scenario revisions;
-- one shared deterministic passenger trace;
-- equivalent stress treatment;
-- replayable event-ledger runs;
-- compatibility checks before comparison;
-- hard constraints shown separately from trade-offs;
-- findings whose numeric claims come only from immutable evidence;
-- visible human Accept or Challenge.
+The result is intentionally not a universal winner: Scenario A serves more passengers and recovers faster; Scenario B lowers maximum wait and energy consumption. The supported finding is **TRADE_OFF / BALANCED / PENDING HUMAN REVIEW**.
 
-It performs no live dispatch and uses no real passenger or fleet feed.
+Passenger conservation is explicit:
 
-## WebMCP role
+```text
+Scenario A · 82 served + 29 in service + 9 unserved = 120
+Scenario B · 81 served + 28 in service + 11 unserved = 120
+```
 
-The H0 public catalog is exactly:
+## Native agent workflow
 
-1. `read_lab_state`
-2. `configure_scenario`
-3. `run_scenario`
-4. `inject_disruption`
-5. `compare_scenarios`
-6. `stage_finding`
+The public WebMCP catalog is static and contains exactly six purpose-bounded tools.
 
-All six will be registered once and remain discoverable. Application
-preconditions—not disappearing tools—will enforce ordering, expected revision,
-idempotency, compatibility, staleness, and cancellation.
+| Tool | Purpose | Mutates state |
+|---|---|:---:|
+| `read_lab_state` | Inspect current scenarios, runs, evidence, and prerequisites | No |
+| `configure_scenario` | Create or revise Scenario A or B | Yes |
+| `inject_disruption` | Attach the deterministic 08:42 vehicle-failure policy | Yes |
+| `run_scenario` | Execute one immutable scenario revision | Yes |
+| `compare_scenarios` | Compare two explicit, current, compatible run artifacts | Yes |
+| `stage_finding` | Stage an evidence-linked finding for human review | Yes |
 
-Manual controls and WebMCP tools call the same application service. The browser
-agent may configure, run, disrupt, compare, and stage. **Accept finding**,
-**Challenge finding**, and deterministic Reset remain visible human UI commands
-and are intentionally absent from WebMCP.
+All six tools remain discoverable throughout the lifecycle. Strict validation, revisions, source-aware idempotency, cancellation, artifact compatibility, and stale-evidence rules are enforced by the shared application service—not by dynamically hiding tools.
 
-## Google Maps role
+Use this prompt in a supported Chrome/WebMCP browser-agent surface:
 
-Google Maps is presentation context only. It may provide the basemap, Advanced
-Markers, authored network overlays, supported GeoJSON/polygon/line layers,
-selection, and geographic orientation.
+> Configure the seed-07 A/B Stress Lab, apply the equivalent deterministic 08:42 failure to each scenario, run both, compare verified evidence, and stage a TRADE_OFF / BALANCED finding for human review.
 
-The versioned authored fixture—not Google—owns simulation distance, travel time,
-dispatch, energy, battery, constraints, metric deltas, and finding evidence.
-When Google is unavailable, the same immutable replay is shown through an
-authored SVG and structured network-list fallback. Results and fingerprints are
-unchanged.
+The browser agent may inspect, configure, stress, run, compare, and stage. **Accept**, **Challenge**, and deterministic **Reset** remain visible human-only controls and do not exist in WebMCP.
 
-## H0 submission scope
+## Trust architecture
 
-The approved H0 target contains:
+```mermaid
+flowchart TB
+    Human[Human operator] --> UI[React manual interface]
+    Agent[Browser agent] --> MCP[Six static WebMCP tools]
+    Maps[Google Maps presentation] --> UI
+    UI --> Service[StressLabService]
+    MCP --> Service
+    Service --> Domain[Deterministic domain engine]
+    Service --> Repo[Revisioned per-tab repository]
+    Domain --> Ledger[Immutable event ledger]
+    Ledger --> Run[Verified run artifact]
+    Run --> Comparison[Compatible comparison]
+    Comparison --> Finding[Evidence-linked finding]
+    Finding --> Review[Human Accept or Challenge]
+```
 
-- one fixed synthetic corridor and shared seed-07 demand trace;
-- two scenario slots;
-- one deterministic 30-second simulation model;
-- one equivalent vehicle-failure type;
-- one transparent dispatch and recovery policy;
-- immutable runs, comparisons, findings, and evidence fingerprints;
-- exact six static WebMCP tools;
-- evidence-linked pending finding and human review;
-- Google projection plus authored fallback;
-- manual, keyboard, reduced-motion, and unsupported-WebMCP paths.
+Dependency direction stays one-way:
 
-Not included in H0: arbitrary city creation, live feeds, GTFS import, external
-optimizers, provider adapters, demand surge, charging outage, charging
-simulation, authentication, database persistence, team workspaces,
-multi-tenancy, exports, embedded chat, SUMO, reinforcement learning, V2X,
-operational dispatch, or real passenger data.
+```text
+UI / WebMCP / Google / Zustand adapters
+                    ↓
+          application services
+                    ↓
+          deterministic domain
+```
 
-## Local development
+- **Domain authority:** arrivals, assignments, movement, capacity, energy, battery, failures, recovery, ledger events, metrics, constraints, comparisons, and supported finding claims.
+- **Application authority:** validation, expected revisions, idempotency, cancellation, compatibility, invalidation, and one atomic publication.
+- **Adapter responsibility:** validate, inject source context, call the service, render compact results, and expose bounded transient activity.
+- **Human authority:** Accept, Challenge, and Reset.
+- **Google boundary:** geographic presentation only. Google never supplies simulation distance, time, traffic, dispatch, energy, metrics, or findings.
 
-Requirements:
+## Deterministic replay
+
+The full-width map and timeline project one current committed run at a time. Vehicles, passengers, demand, the failure marker, inspectors, and frame controls are derived from immutable snapshots and ledger-prefix evidence.
+
+- A/B switching never mixes run artifacts.
+- Seeking selects an exact committed frame.
+- Playback speed changes wall-clock cadence only.
+- Invalidation immediately removes stale dynamic overlays.
+- Map camera, layers, selection, and playback create no revision or audit record.
+- The authored fallback preserves the manual workflow when Google Maps is unavailable.
+
+Google road geometry may refine screen position only. The authored network remains the topology and evidence authority.
+
+## Reliability and security
+
+- Strict Zod validation plus closed-world JSON Schema at the WebMCP boundary.
+- Exact operation retry returns the original terminal result.
+- Changed arguments or cross-source operation-ID reuse fail closed.
+- Concurrent writes against one revision publish at most one winner.
+- Cancellation creates no partial artifact or later ghost completion.
+- Scenario edits preserve history and atomically invalidate only affected current pointers.
+- Tool output is bounded, sanitized, and excludes raw exceptions, prompts, storage, keys, and unrestricted URLs.
+- Browser and Google keys remain outside source, evidence, activity, and fingerprints.
+- Manual mode stays complete when WebMCP is unsupported.
+
+## Run locally
+
+### Requirements
 
 - Node.js 20+
 - pnpm 8.11.0
-- Google Chrome 150 with WebMCP testing enabled for real-browser gates
+- Google Chrome 150 with WebMCP testing enabled for native browser-agent testing
 
 ```bash
+git clone https://github.com/abhi1994CD1/maav-mobility-webmcp.git
+cd maav-mobility-webmcp
 pnpm install
 pnpm dev
 ```
 
-The current baseline opens at `http://localhost:3000`. A later approved gate
-will add Stress Lab at `/lab`; do not infer that route exists during Gate 1.
+Open [http://localhost:3000/lab](http://localhost:3000/lab).
+
+The complete manual experiment works without a Google key. For the Google presentation surface, add restricted browser credentials to an ignored `.env.local`:
+
+```bash
+NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=your_restricted_browser_key
+NEXT_PUBLIC_GOOGLE_MAP_ID=your_public_map_id
+```
+
+Never commit `.env.local`. Restrict the browser key by HTTP referrer and to the required Google Maps APIs in Google Cloud.
 
 ## Verification
-
-Local hard gates:
 
 ```bash
 pnpm lint
@@ -164,22 +191,68 @@ pnpm test
 pnpm build
 ```
 
-Full Playwright E2E may run in Linux CI. The newest locally downloaded
-Playwright browser is not a blocking macOS development requirement. Every
-implemented WebMCP slice must also pass the documented real Chrome 150 smoke
-gate.
+Current local release-candidate evidence:
+
+```text
+ESLint                 PASS
+TypeScript strict      PASS
+Vitest                 36 files · 278 tests PASS
+Next.js production     PASS
+/lab                   statically generated
+```
+
+Native browser-agent behavior must also be smoke-tested in the exact deployed Chrome/WebMCP environment; unit tests and direct page execution are not substitutes for that proof.
+
+## Repository guide
+
+| Path | Responsibility |
+|---|---|
+| `src/domain/stress-lab/` | Deterministic engine, fixtures, events, metrics, comparison, findings |
+| `src/application/` | Ports, command authority, cancellation, idempotency, atomic publication |
+| `src/infrastructure/webmcp/` | Six strict WebMCP adapters and lifecycle-safe registration |
+| `src/infrastructure/persistence/` | Revisioned production repository adapter |
+| `src/state/` | Shared tab-scoped runtime and presentation hooks |
+| `src/features/stress-lab/` | Premium manual workbench, evidence, review, activity, replay |
+| `tests/` | Unit, contract, deterministic regression, and browser-independent UI proof |
+| `artifacts/` | Gate evidence and review captures |
+| `docs/` | Product, architecture, simulation, WebMCP, demo, and delivery contracts |
+
+## Evidence gallery
+
+| Comparison | Pending human review |
+|---|---|
+| ![Scenario A and B comparison evidence](artifacts/gate8/maav-gate8-comparison-1440x900.jpg) | ![Trade-off finding pending human review](artifacts/gate8/maav-gate8-pending-review-1366x768.jpg) |
+
+These captures are development evidence. The public demo and final video should be recorded from the same deployed release SHA.
+
+## Honest boundaries
+
+The H0 release intentionally excludes arbitrary cities, live passenger or vehicle feeds, GTFS import, external optimizers, demand-surge modeling, charging simulation, authentication, databases, multi-user workspaces, exports, operational dispatch, and real passenger data.
+
+Roadmap ideas are future work—not implemented claims.
 
 ## Documentation
 
-- [Product behavior and scope](./docs/PRODUCT.md)
-- [Architecture and state flow](./docs/ARCHITECTURE.md)
-- [Simulation contract](./docs/SIMULATION_ENGINE.md)
-- [WebMCP contracts](./docs/WEBMCP_TOOLS.md)
-- [Golden demonstration](./docs/DEMO.md)
-- [Challenge delivery plan](./docs/CHALLENGE_PLAN.md)
-- [Durable agent guardrails](./AGENTS.md)
-- [Approved planning sources](./docs/plans/stress-lab/)
+- [Product contract](docs/PRODUCT.md)
+- [Architecture and state flow](docs/ARCHITECTURE.md)
+- [Deterministic simulation contract](docs/SIMULATION_ENGINE.md)
+- [WebMCP contracts](docs/WEBMCP_TOOLS.md)
+- [Golden demonstration](docs/DEMO.md)
+- [Challenge delivery plan](docs/CHALLENGE_PLAN.md)
+- [Devpost draft](devpost-submission.md)
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+Released under the [MIT License](LICENSE).
+
+Copyright © 2026 Abhishek Dhar.
+
+---
+
+<div align="center">
+
+Built for **The WebMCP Challenge**.
+
+**MAAV Stress Lab · v0.5**
+
+</div>

@@ -6,6 +6,10 @@ export const metadata: Metadata = {
   title: "Nexus Mobility Recovery Command",
   description:
     "A human-governed simulated mobility recovery command center powered by browser-native WebMCP tools.",
+  icons: {
+    icon: "/favicon.png",
+    shortcut: "/favicon.png",
+  },
 };
 
 interface RootLayoutProps {

@@ -6,10 +6,10 @@ This document owns H0 simulation rules, event evidence, metric definitions,
 hard constraints, fingerprints, cancellation, invariants, and model
 limitations.
 
-Gate 4 implements the headless `v2` run contract described here. This document
-contains no preferred-scenario constant or claim that the H0 outcome has been
-calibrated. Application orchestration, UI, WebMCP, comparison, and finding work
-remain later gates.
+The H0 runtime implements the headless `v2` run contract described here. This
+document contains no preferred-scenario constant or claim that the H0 outcome
+has been calibrated. Application orchestration, UI, WebMCP, comparison, and
+finding layers consume this contract without changing its evidence.
 
 The engine is a bounded deterministic experiment model, not a general transport
 simulator, optimizer, machine-learning system, or real-world predictor.

@@ -15,6 +15,12 @@ import {
   type ScenarioDraft,
 } from "@/state/stress-lab-hooks";
 import { createStressLabRuntime, type StressLabRuntime } from "@/state/stress-lab-runtime";
+import type { StressLabWebMcpActivity } from "@/infrastructure/persistence/stress-lab-repository";
+import {
+  latestWebMcpActivityStatus,
+  webMcpReplayFocusFor,
+  webMcpVisualTargetFor,
+} from "@/features/stress-lab/webmcp-visual-orchestration";
 
 const GOLDEN = Object.freeze({
   inputA: "sha256-v1:5156b1558d9767d60d1d050df868adb54b8075a0681ccea50dad07071b64afae",
@@ -63,6 +69,100 @@ async function completeManualGolden(runtime: StressLabRuntime) {
 }
 
 describe("Gate 8 manual Stress Lab authority", () => {
+  it("maps real WebMCP activity to bounded presentation-only surfaces", () => {
+    const activity = (
+      id: number,
+      toolName: string,
+      argumentSummary: string,
+      status: "RECEIVED" | "RUNNING" | "COMMITTED" = "RECEIVED",
+    ): StressLabWebMcpActivity => Object.freeze({
+      id,
+      toolName,
+      source: "WEBMCP" as const,
+      operationId: `operation-${id}`,
+      argumentSummary,
+      startedAt: "2026-09-03T00:00:00.000Z",
+      transitions: Object.freeze([
+        Object.freeze({ status, at: "2026-09-03T00:00:00.000Z" }),
+      ]),
+    });
+    const configure = activity(1, "configure_scenario", "slot=A;mode=REPLACE");
+    const inject = activity(
+      2,
+      "inject_disruption",
+      "scenarioRevisionId=scenario-B-r2;atSecond=720;target=DETERMINISTIC_RULE",
+      "RUNNING",
+    );
+    const run = activity(3, "run_scenario", "scenarioRevisionId=scenario-A-r2");
+    const compare = activity(4, "compare_scenarios", "runAId=run-A-1;runBId=run-B-2");
+    const finding = activity(5, "stage_finding", "comparisonId=comparison-1", "COMMITTED");
+    const read = activity(6, "read_lab_state", "scope=SUMMARY");
+    const malformed = activity(7, "run_scenario", "scenarioRevisionId=invalid");
+    const before = JSON.stringify([configure, inject, run, compare, finding, read, malformed]);
+
+    expect(webMcpVisualTargetFor(configure)).toEqual({
+      kind: "SCENARIO",
+      activityId: 1,
+      slot: "A",
+      action: "configure",
+    });
+    expect(webMcpVisualTargetFor(inject)).toEqual({
+      kind: "SCENARIO",
+      activityId: 2,
+      slot: "B",
+      action: "inject",
+    });
+    expect(webMcpVisualTargetFor(run)).toEqual({
+      kind: "SCENARIO",
+      activityId: 3,
+      slot: "A",
+      action: "run",
+    });
+    expect(webMcpVisualTargetFor(compare)).toEqual({
+      kind: "SURFACE",
+      activityId: 4,
+      surface: "COMPARISON",
+    });
+    expect(webMcpVisualTargetFor(finding)).toEqual({
+      kind: "SURFACE",
+      activityId: 5,
+      surface: "FINDING",
+    });
+    expect(webMcpVisualTargetFor(read)).toBeNull();
+    expect(webMcpVisualTargetFor(malformed)).toBeNull();
+    expect(latestWebMcpActivityStatus(inject)).toBe("RUNNING");
+    expect(latestWebMcpActivityStatus(finding)).toBe("COMMITTED");
+    expect(JSON.stringify([configure, inject, run, compare, finding, read, malformed])).toBe(before);
+  });
+
+  it("maps a committed current-run read to replay focus without mutating authority", () => {
+    const readRun: StressLabWebMcpActivity = Object.freeze({
+      id: 31,
+      toolName: "read_lab_state",
+      source: "WEBMCP",
+      argumentSummary: "scope=RUN",
+      startedAt: "2026-09-03T00:00:00.000Z",
+      endedAt: "2026-09-03T00:00:00.001Z",
+      transitions: Object.freeze([
+        Object.freeze({ status: "RECEIVED" as const, at: "2026-09-03T00:00:00.000Z" }),
+        Object.freeze({ status: "VALIDATED" as const, at: "2026-09-03T00:00:00.000Z" }),
+        Object.freeze({ status: "RUNNING" as const, at: "2026-09-03T00:00:00.000Z" }),
+        Object.freeze({ status: "COMMITTED" as const, at: "2026-09-03T00:00:00.001Z" }),
+      ]),
+    });
+    const before = JSON.stringify(readRun);
+
+    expect(webMcpReplayFocusFor(readRun, "run-A-1", {
+      A: "run-A-1",
+      B: "run-B-2",
+    })).toEqual({ activityId: 31, slot: "A", runId: "run-A-1" });
+    expect(webMcpReplayFocusFor(readRun, "historical-run", {
+      A: "run-A-1",
+      B: "run-B-2",
+    })).toBeNull();
+    expect(JSON.stringify(readRun)).toBe(before);
+  });
+
   it("reuses one runtime controller and exposes cross-surface commits without reload", async () => {
     const runtime = createStressLabRuntime();
     const first = getManualStressLabController(runtime);
@@ -265,5 +365,152 @@ describe("Gate 8 manual Stress Lab authority", () => {
     expect(production).toContain("PENDING_REVIEW");
     expect(production).toContain("RESOLVED FAILURE TARGET");
     expect(production).toContain("activity.artifactId");
+  });
+
+  it("opens scenario configuration and evidence in accessible black-glass A/B dialogs", () => {
+    const root = resolve(process.cwd(), "src/features/stress-lab");
+    const workbench = readFileSync(resolve(root, "StressLab.tsx"), "utf8");
+    const scenarioPanel = readFileSync(resolve(root, "ScenarioPanel.tsx"), "utf8");
+    const map = readFileSync(resolve(root, "map/StressLabMap.tsx"), "utf8");
+    const shellCss = readFileSync(resolve(root, "stress-lab.module.css"), "utf8");
+    const mapCss = readFileSync(resolve(root, "map/stress-lab-map.module.css"), "utf8");
+
+    expect(workbench).not.toContain('surface="A_SCENARIO"');
+    expect(workbench).not.toContain('surface="A_EVIDENCE"');
+    expect(workbench).not.toContain('surface="B_SCENARIO"');
+    expect(workbench).not.toContain('surface="B_EVIDENCE"');
+    expect(workbench).toContain('className={`${styles.workbenchLauncher}');
+    expect(workbench).toContain('aria-haspopup="dialog"');
+    expect(workbench).toContain('aria-controls="scenario-workbench-dialog"');
+    expect(workbench).toContain('dialog.showModal()');
+    expect(workbench).toContain('closedby="any"');
+    expect(workbench).toContain('role="tablist"');
+    expect(workbench).toContain('role="tab"');
+    expect(workbench).toContain('aria-selected={selected}');
+    expect(workbench).toContain('hidden={scenarioTab !== "A"}');
+    expect(workbench).toContain('hidden={scenarioTab !== "B"}');
+    expect(workbench).toContain('onKeyDown={handleScenarioTabKeyDown}');
+    expect(workbench).toContain('aria-controls="evidence-workbench-dialog"');
+    expect(workbench).toContain('id="evidence-workbench-dialog"');
+    expect(workbench).toContain('aria-label="Evidence scenario"');
+    expect(workbench).toContain('hidden={evidenceTab !== "A"}');
+    expect(workbench).toContain('hidden={evidenceTab !== "B"}');
+    expect(workbench).toContain('onKeyDown={handleEvidenceTabKeyDown}');
+    expect(workbench).toContain('<MetricsPanel slot="A"');
+    expect(workbench).toContain('<MetricsPanel slot="B"');
+    expect(workbench).toContain('event.key === "ArrowLeft"');
+    expect(workbench).toContain('event.key === "ArrowRight"');
+    expect(workbench).toContain('aria-controls="stress-lab-control-drawer"');
+    expect(workbench).toContain('hidden={!activeSurface}');
+    expect(workbench).toContain('aria-label={`Open ${SURFACE_TITLES[surface]}`}');
+    expect(workbench).toContain('src="/brand/neo-lab-logo.png"');
+    expect(workbench).toContain(">MAAV Stress Lab</span>");
+    expect(workbench).not.toContain("NEO LAB · DETERMINISTIC ASSURANCE");
+    expect(workbench).not.toContain("<b>MAP</b>");
+    expect(workbench).toContain("<span>Reset</span>");
+    expect(workbench).toContain("webMcpVisualTargetFor(latest)");
+    expect(workbench).toContain("target?.scrollIntoView({");
+    expect(workbench).toContain('"(prefers-reduced-motion: reduce)"');
+    expect(workbench).toContain('setActiveSurface("ACTIVITY")');
+    expect(workbench).toContain("replayAutoplayQueue.current.enqueue(request)");
+    expect(workbench).toContain("if (scenarioDialog.current?.open) scenarioDialog.current.close()");
+    expect(workbench).toContain("autoplayRequest={autoplayRequest}");
+    expect(workbench).toContain("onAutoplaySettled={settleReplay}");
+    expect(workbench).toContain('id: `WEBMCP:${activity.id}`');
+    expect(workbench).toContain('id: `WEBMCP_READ:${replayFocus.activityId}`');
+    expect(workbench).toContain('id: `HUMAN_UI:${outcome.result.operationId}`');
+    expect(workbench).toContain('target.action === "run" &&');
+    expect(workbench).toContain("replayAutoplayQueue.current.hasWork()");
+    expect(workbench).toContain('setActiveSurface("FINDING")');
+    expect(map).toContain('clock.play()');
+    expect(map).toContain('"(prefers-reduced-motion: reduce)"');
+    expect(workbench).toContain("terminalWebMcpAnnouncement");
+    expect(workbench).toContain("styles.webMcpControlStatus");
+    expect(workbench).toContain("highlightedWebMcpAction={");
+    expect(scenarioPanel).toContain('data-webmcp-action="configure"');
+    expect(scenarioPanel).toContain('data-webmcp-action="inject"');
+    expect(scenarioPanel).toContain('data-webmcp-action="run"');
+    expect(workbench).toContain("actions={(");
+    expect(map).toContain("{actions}");
+    const controlRailMarkup = workbench.slice(
+      workbench.indexOf('className={styles.controlRail}'),
+      workbench.indexOf('id="stress-lab-control-drawer"'),
+    );
+    expect(controlRailMarkup).toContain("styles.promptLauncher");
+    expect(controlRailMarkup).toContain("Copy prompt");
+    expect(controlRailMarkup).toContain("Seed-07 golden brief");
+    expect(workbench).not.toContain("styles.truthStrip");
+    expect(shellCss).not.toContain(".truthStrip");
+    expect(map).toContain('className={styles.rightDock}');
+    expect(map).toContain('className={styles.layerToolbar}');
+    expect(map).toContain('aria-label={`${label} layer`}');
+    expect(map.indexOf("styles.layerToolbar")).toBeLessThan(map.indexOf("<EntityInspector"));
+    expect(map).toContain('className={styles.inspectorEmpty}');
+    expect(map).toContain('aria-label="Inspectable evidence"');
+    expect(map).toContain("No replay evidence available");
+    expect(map).toContain("Select a committed entity");
+    expect(map).toContain("Historical evidence preserved");
+    expect(map).toContain('className={styles.bottomUtilityBar}');
+    expect(map).toContain('aria-expanded={routeLegendOpen}');
+    expect(map).toContain('aria-controls="route-semantics-panel"');
+    expect(map).toContain('<aside id={id} className={styles.routeLegend}');
+    expect(shellCss).toContain("backdrop-filter: blur(46px)");
+    expect(shellCss).toContain(".scenarioDialog::backdrop");
+    expect(shellCss).toContain("backdrop-filter: blur(48px)");
+    expect(shellCss).toContain(".controlDrawer .panel");
+    expect(shellCss).toContain("backdrop-filter: blur(18px)");
+    expect(shellCss).toContain(".scenarioTabA[aria-selected=\"true\"]");
+    expect(shellCss).toContain(".scenarioTabB[aria-selected=\"true\"]");
+    expect(shellCss).toContain(".evidenceLauncher");
+    expect(shellCss).toContain(".evidenceDialog");
+    expect(shellCss).toContain(".webMcpActionActive");
+    expect(shellCss).toContain(".webMcpControlStatus");
+    const launcherIconCss = shellCss.slice(
+      shellCss.indexOf(".workbenchLauncherIcon {"),
+      shellCss.indexOf(".workbenchLauncherCopy"),
+    );
+    expect(launcherIconCss).toContain("border: 0");
+    expect(launcherIconCss).toContain("background: transparent");
+    const controlRailCss = shellCss.slice(
+      shellCss.indexOf(".controlRail {"),
+      shellCss.indexOf(".controlRail:hover"),
+    );
+    expect(controlRailCss).toContain("border: 0");
+    expect(controlRailCss).toContain("background: transparent");
+    expect(controlRailCss).toContain("box-shadow: none");
+    const surfaceMarkerCss = shellCss.slice(
+      shellCss.indexOf(".surfaceMarker {"),
+      shellCss.indexOf(".surfaceMarker svg"),
+    );
+    expect(surfaceMarkerCss).toContain("border: 0");
+    expect(surfaceMarkerCss).toContain("background: transparent");
+    expect(mapCss).toContain("/* ─── Right map-tools dock");
+    expect(mapCss).toContain(".layerToolbar");
+    expect(mapCss).toContain(".bottomUtilityBar");
+    expect(map).toContain('className={styles.headerControls}');
+    expect(map.indexOf('className={styles.bottomUtilityBar}')).toBeLessThan(map.indexOf('className={styles.scenarioSelector}'));
+    expect(mapCss).toContain("/* ─── Map utilities beside the scenario switch");
+    expect(map).toContain('className={styles.scrubberHeader}');
+    expect(map).toContain('style={replayProgressStyle}');
+    expect(map).toContain('className={styles.playButton}');
+    expect(mapCss).toContain('grid-template-areas: "identity transport scrubber speed camera"');
+    expect(mapCss).toContain("--replay-progress");
+    const timelineCss = mapCss.slice(
+      mapCss.indexOf(".timeline {"),
+      mapCss.indexOf(".timelineIdentity"),
+    );
+    expect(timelineCss).toContain("left: 18px");
+    expect(timelineCss).toContain("right: 18px");
+    expect(workbench).toContain('from "lucide-react"');
+    expect(map).toContain('from "lucide-react"');
+    expect(workbench).toContain("<Settings2");
+    expect(workbench).toContain("icon={GitCompareArrows}");
+    expect(map).toContain("<StepBack");
+    expect(map).toContain("<Crosshair");
+    expect(map).toContain("scale={0.78}");
+    expect(shellCss).toContain("width: 184px");
+    expect(shellCss).toContain("left: 218px");
+    expect(mapCss).toContain("width: 330px");
+    expect(mapCss).toContain("width: 394px");
   });
 });
